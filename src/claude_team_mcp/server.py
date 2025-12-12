@@ -551,7 +551,7 @@ async def spawn_session(
 @mcp.tool()
 async def spawn_team(
     ctx: Context[ServerSession, AppContext],
-    projects: dict[str, str],
+    projects: dict[str, str | dict],
     layout: str = "quad",
     skip_permissions: bool = False,
 ) -> dict:
@@ -561,15 +561,22 @@ async def spawn_team(
     Creates a new iTerm2 window with the specified pane layout and starts
     Claude Code in each pane. All sessions are registered for management.
     Each pane receives a unique tab color from a visually distinct sequence,
-    and badges display the pane position.
+    and badges display issue/task information.
 
     Args:
-        projects: Dict mapping pane names to project paths. Keys must match
+        projects: Dict mapping pane names to project config. Keys must match
             the layout's pane names:
             - "vertical": ["left", "right"]
             - "horizontal": ["top", "bottom"]
             - "quad": ["top_left", "top_right", "bottom_left", "bottom_right"]
             - "triple_vertical": ["left", "middle", "right"]
+
+            Values can be either:
+            - A string (project path) for simple usage
+            - A dict with keys:
+                - "path" (required): Project directory path
+                - "issue_id" (optional): Beads issue ID for badge (e.g., "cic-123")
+                - "task_description" (optional): Task description for badge
         layout: Layout type - "vertical", "horizontal", "quad", or "triple_vertical"
         skip_permissions: If True, start Claude with --dangerously-skip-permissions
 
@@ -582,9 +589,9 @@ async def spawn_team(
     Example:
         spawn_team(
             projects={
-                "top_left": "/path/to/frontend",
-                "top_right": "/path/to/backend",
-                "bottom_left": "/path/to/api",
+                "top_left": {"path": "/path/to/frontend", "issue_id": "cic-123", "task_description": "Fix auth"},
+                "top_right": "/path/to/backend",  # simple string still works
+                "bottom_left": {"path": "/path/to/api", "task_description": "Add endpoint"},
                 "bottom_right": "/path/to/tests"
             },
             layout="quad"
@@ -613,11 +620,40 @@ async def spawn_team(
             hint=f"Valid pane names for '{layout}' are: {', '.join(expected_panes)}",
         )
 
+    # Parse projects dict - each value can be a string (path) or dict with path/metadata
+    # Store parsed data: pane_name -> {path, issue_id, task_description}
+    parsed_projects: dict[str, dict] = {}
+    for pane_name, project_config in projects.items():
+        if isinstance(project_config, str):
+            # Simple string path
+            parsed_projects[pane_name] = {
+                "path": project_config,
+                "issue_id": None,
+                "task_description": None,
+            }
+        elif isinstance(project_config, dict):
+            # Dict with path and optional metadata
+            if "path" not in project_config:
+                return error_response(
+                    f"Missing 'path' key in project config for '{pane_name}'",
+                    hint="When using dict format, 'path' is required. Example: {'path': '/some/dir', 'issue_id': 'cic-123'}",
+                )
+            parsed_projects[pane_name] = {
+                "path": project_config["path"],
+                "issue_id": project_config.get("issue_id"),
+                "task_description": project_config.get("task_description"),
+            }
+        else:
+            return error_response(
+                f"Invalid project config type for '{pane_name}': {type(project_config).__name__}",
+                hint="Project config must be a string (path) or dict with 'path' key",
+            )
+
     # Validate all project paths exist and detect worktrees
     resolved_projects = {}
     project_envs: dict[str, dict[str, str]] = {}
-    for pane_name, project_path in projects.items():
-        resolved = os.path.abspath(os.path.expanduser(project_path))
+    for pane_name, pdata in parsed_projects.items():
+        resolved = os.path.abspath(os.path.expanduser(pdata["path"]))
         if not os.path.isdir(resolved):
             return error_response(
                 f"Project path does not exist for '{pane_name}': {resolved}",
@@ -648,11 +684,19 @@ async def spawn_team(
 
             customization = iterm2.LocalWriteOnlyProfile()
 
-            # Generate session name for this pane
-            session_name = f"{layout}_{pane_name}"
+            # Get parsed metadata for this pane
+            pdata = parsed_projects[pane_name]
+            issue_id = pdata.get("issue_id")
+            task_description = pdata.get("task_description")
 
-            # Set tab title with pane position
-            tab_title = format_session_title(session_name)
+            # Generate session name - prefer issue_id if available
+            if issue_id:
+                session_name = issue_id
+            else:
+                session_name = f"{layout}_{pane_name}"
+
+            # Set tab title
+            tab_title = format_session_title(session_name, task_description)
             customization.set_name(tab_title)
 
             # Set unique tab color for this pane
@@ -660,8 +704,10 @@ async def spawn_team(
             customization.set_tab_color(color)
             customization.set_use_tab_color(True)
 
-            # Set badge text to show pane position (e.g., "top_left" -> "top-left")
-            badge_text = pane_name.replace("_", "-")
+            # Set badge text using issue/task info if available, else pane position
+            badge_text = format_badge_text(issue_id, task_description)
+            if not badge_text:
+                badge_text = pane_name.replace("_", "-")
             customization.set_badge_text(badge_text)
 
             pane_customizations[pane_name] = customization
@@ -680,10 +726,17 @@ async def spawn_team(
         # Register all sessions (this is quick, no I/O)
         managed_sessions = {}
         for pane_name, iterm_session in pane_sessions.items():
+            # Use issue_id as session name if available, else layout_pane format
+            pdata = parsed_projects[pane_name]
+            if pdata.get("issue_id"):
+                session_name = pdata["issue_id"]
+            else:
+                session_name = f"{layout}_{pane_name}"
+
             managed = registry.add(
                 iterm_session=iterm_session,
                 project_path=resolved_projects[pane_name],
-                name=f"{layout}_{pane_name}",  # e.g., "quad_top_left"
+                name=session_name,
             )
             managed_sessions[pane_name] = managed
 
