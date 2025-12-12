@@ -550,6 +550,158 @@ async def send_message(
 
 
 @mcp.tool()
+async def broadcast_message(
+    ctx: Context[ServerSession, AppContext],
+    session_ids: list[str],
+    message: str,
+    wait_for_response: bool = False,
+    timeout: float = 120.0,
+) -> dict:
+    """
+    Send the same message to multiple Claude Code sessions in parallel.
+
+    Broadcasts a message to all specified sessions concurrently and returns
+    aggregated results. Useful for coordinating multiple worker sessions
+    or sending the same instruction to a team.
+
+    Args:
+        session_ids: List of session IDs to send the message to
+        message: The prompt/message to send to all sessions
+        wait_for_response: If True, wait for Claude to finish responding in each session
+        timeout: Maximum seconds to wait for responses (if wait_for_response=True)
+
+    Returns:
+        Dict with:
+            - results: Dict mapping session_id to individual result
+            - success_count: Number of sessions that received the message
+            - failure_count: Number of sessions that failed
+            - total: Total number of sessions targeted
+    """
+    from .session_state import wait_for_response as wait_for_resp
+
+    app_ctx = ctx.request_context.lifespan_context
+    registry = app_ctx.registry
+
+    if not session_ids:
+        return {"error": "No session_ids provided"}
+
+    # Validate all sessions exist first
+    # (fail fast if any session is invalid)
+    missing_sessions = []
+    closed_sessions = []
+    valid_sessions = []
+
+    for sid in session_ids:
+        session = registry.get(sid)
+        if not session:
+            missing_sessions.append(sid)
+        elif session.status == SessionStatus.CLOSED:
+            closed_sessions.append(sid)
+        else:
+            valid_sessions.append((sid, session))
+
+    # Report validation errors but continue with valid sessions
+    results = {}
+
+    for sid in missing_sessions:
+        results[sid] = {"error": f"Session not found: {sid}", "success": False}
+
+    for sid in closed_sessions:
+        results[sid] = {"error": f"Session is closed: {sid}", "success": False}
+
+    if not valid_sessions:
+        return {
+            "results": results,
+            "success_count": 0,
+            "failure_count": len(results),
+            "total": len(session_ids),
+            "error": "No valid sessions to send to",
+        }
+
+    async def send_to_session(sid: str, session) -> tuple[str, dict]:
+        """
+        Send message to a single session.
+
+        Returns tuple of (session_id, result_dict).
+        """
+        try:
+            # Update status to busy
+            registry.update_status(sid, SessionStatus.BUSY)
+
+            # Capture baseline state before sending (for response detection)
+            baseline_uuid = None
+            jsonl_path = session.get_jsonl_path()
+            if jsonl_path and jsonl_path.exists():
+                state = session.get_conversation_state()
+                if state and state.last_assistant_message:
+                    baseline_uuid = state.last_assistant_message.uuid
+
+            # Send the message to the terminal
+            await send_prompt(session.iterm_session, message, submit=True)
+
+            result = {
+                "success": True,
+                "session_id": sid,
+                "message_sent": message[:100] + "..." if len(message) > 100 else message,
+            }
+
+            # Optionally wait for response
+            if wait_for_response:
+                if jsonl_path and jsonl_path.exists():
+                    response = await wait_for_resp(
+                        jsonl_path=jsonl_path,
+                        timeout=timeout,
+                        idle_threshold=2.0,
+                        baseline_message_uuid=baseline_uuid,
+                    )
+                    if response:
+                        result["response"] = response.content
+                        result["response_preview"] = (
+                            response.content[:500] + "..."
+                            if len(response.content) > 500
+                            else response.content
+                        )
+                    else:
+                        result["response"] = None
+                        result["timeout"] = True
+
+            # Update status back to ready
+            registry.update_status(sid, SessionStatus.READY)
+
+            return (sid, result)
+
+        except Exception as e:
+            logger.error(f"Failed to send message to {sid}: {e}")
+            registry.update_status(sid, SessionStatus.READY)
+            return (sid, {"error": str(e), "session_id": sid, "success": False})
+
+    # Send to all valid sessions in parallel
+    tasks = [send_to_session(sid, session) for sid, session in valid_sessions]
+    parallel_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Process results
+    for item in parallel_results:
+        if isinstance(item, Exception):
+            # This shouldn't happen since we catch exceptions in send_to_session,
+            # but handle it just in case
+            logger.error(f"Unexpected exception in broadcast: {item}")
+            continue
+        sid, result = item
+        results[sid] = result
+
+    # Compute success/failure counts
+    success_count = sum(1 for r in results.values() if r.get("success", False))
+    failure_count = len(results) - success_count
+
+    return {
+        "results": results,
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "total": len(session_ids),
+    }
+
+
+@mcp.tool()
 async def get_response(
     ctx: Context[ServerSession, AppContext],
     session_id: str,
