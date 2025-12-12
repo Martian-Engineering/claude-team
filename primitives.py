@@ -309,10 +309,20 @@ async def send_prompt(session: "iterm2.Session", text: str, submit: bool = True)
 
     IMPORTANT: Uses \\x0d (Ctrl+M) for Enter, not \\n.
     iTerm2 interprets \\x0d as the actual Enter keypress.
+
+    For multi-line text, iTerm2 uses bracketed paste mode which wraps the
+    content in escape sequences. A delay is needed after pasting multi-line
+    content before sending Enter to ensure the paste operation completes.
     """
+    import asyncio
+
     require_iterm2()
     await session.async_send_text(text)
     if submit:
+        # Multi-line text triggers bracketed paste mode in iTerm2. The terminal
+        # buffers pasted content and needs time to process before Enter works.
+        if "\n" in text:
+            await asyncio.sleep(0.1)
         await session.async_send_text(KEYS['enter'])
 
 
