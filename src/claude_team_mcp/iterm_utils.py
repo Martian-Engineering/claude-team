@@ -210,8 +210,9 @@ async def create_window(
     """
     Create a new iTerm2 window with screen-filling dimensions.
 
-    Creates the window and immediately sets its frame to fill the screen
-    without entering macOS fullscreen mode (staying in the current Space).
+    Creates the window, exits fullscreen if needed, and sets its frame to
+    fill the screen without entering macOS fullscreen mode (staying in the
+    current Space).
 
     Args:
         connection: iTerm2 connection object
@@ -230,6 +231,16 @@ async def create_window(
         profile=profile,
         profile_customizations=profile_customizations,
     )
+
+    # Exit fullscreen mode if the window opened in fullscreen
+    # (can happen if user's default profile or iTerm2 settings use fullscreen)
+    is_fullscreen = await window.async_get_fullscreen()
+    if is_fullscreen:
+        logger.info("Window opened in fullscreen, exiting fullscreen mode")
+        await window.async_set_fullscreen(False)
+        # Give macOS time to animate out of fullscreen
+        import asyncio
+        await asyncio.sleep(0.5)
 
     # Set window frame to fill screen without triggering fullscreen mode
     x, y, width, height = _calculate_screen_frame()
