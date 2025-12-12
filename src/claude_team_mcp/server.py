@@ -608,6 +608,238 @@ async def get_session_status(
 
 
 @mcp.tool()
+async def discover_sessions(
+    ctx: Context[ServerSession, AppContext],
+) -> dict:
+    """
+    Discover existing Claude Code sessions running in iTerm2.
+
+    Scans all iTerm2 windows, tabs, and panes to find sessions that appear
+    to be running Claude Code. Attempts to match each session to its JSONL
+    file in ~/.claude/projects/ based on the project path visible on screen.
+
+    Returns:
+        Dict with:
+            - sessions: List of discovered sessions, each containing:
+                - iterm_session_id: iTerm2's internal session ID
+                - project_path: Detected project path (if found)
+                - claude_session_id: Matched JSONL session ID (if found)
+                - model: Detected model (Opus/Sonnet/Haiku if visible)
+                - screen_preview: Last few lines of screen content
+                - already_managed: True if this session is already in our registry
+            - count: Total number of Claude sessions found
+            - unmanaged_count: Number not yet imported into registry
+    """
+    from .session_state import CLAUDE_PROJECTS_DIR, find_active_session, list_sessions
+
+    app_ctx = ctx.request_context.lifespan_context
+    app = app_ctx.iterm_app
+    registry = app_ctx.registry
+
+    discovered = []
+
+    # Get all managed iTerm session IDs so we can flag already-managed ones
+    managed_iterm_ids = {
+        s.iterm_session.session_id for s in registry.list_all()
+    }
+
+    # Scan all iTerm2 sessions
+    for window in app.terminal_windows:
+        for tab in window.tabs:
+            for iterm_session in tab.sessions:
+                try:
+                    screen_text = await read_screen_text(iterm_session)
+
+                    # Detect if this is a Claude Code session by looking for indicators:
+                    # - Model name (Opus, Sonnet, Haiku)
+                    # - Prompt character (>)
+                    # - Common Claude Code UI elements
+                    is_claude = False
+                    detected_model = None
+
+                    for model in ["Opus", "Sonnet", "Haiku"]:
+                        if model in screen_text:
+                            is_claude = True
+                            detected_model = model
+                            break
+
+                    # Also check for Claude-specific patterns
+                    if not is_claude:
+                        # Look for status line patterns: "ctx:", "tokens", "api:✓"
+                        if "ctx:" in screen_text or "tokens" in screen_text:
+                            is_claude = True
+
+                    if not is_claude:
+                        continue
+
+                    # Try to extract project path from screen
+                    # Look for "git:(" pattern which shows git branch, indicating project dir
+                    # Or extract from visible path patterns
+                    project_path = None
+                    claude_session_id = None
+
+                    # Parse screen lines for project info
+                    lines = [l.strip() for l in screen_text.split("\n") if l.strip()]
+
+                    # Look for git branch indicator which often shows project name
+                    for line in lines:
+                        # Pattern: "project-name git:(branch)" in status line
+                        if "git:(" in line:
+                            # Extract the part before "git:("
+                            parts = line.split("git:(")[0].strip().split()
+                            if parts:
+                                project_name = parts[-1]
+                                # Try to find this project in Claude's projects dir
+                                for proj_dir in CLAUDE_PROJECTS_DIR.iterdir():
+                                    if proj_dir.is_dir() and project_name in proj_dir.name:
+                                        # Reconstruct project path from slug
+                                        # Slug is like -Users-phaedrus-Projects-myproject
+                                        # Convert back to /Users/phaedrus/Projects/myproject
+                                        reconstructed = proj_dir.name.replace("-", "/")
+                                        if reconstructed.startswith("/"):
+                                            project_path = reconstructed
+                                            break
+                            break
+
+                    # If we found a project path, try to find the active JSONL session
+                    if project_path:
+                        # Find most recently active session for this project
+                        claude_session_id = find_active_session(
+                            project_path, max_age_seconds=3600  # Within last hour
+                        )
+
+                    # Get last few lines as preview
+                    preview_lines = [l for l in lines if l][-5:]
+                    screen_preview = "\n".join(preview_lines)
+
+                    discovered.append({
+                        "iterm_session_id": iterm_session.session_id,
+                        "project_path": project_path,
+                        "claude_session_id": claude_session_id,
+                        "model": detected_model,
+                        "screen_preview": screen_preview,
+                        "already_managed": iterm_session.session_id in managed_iterm_ids,
+                    })
+
+                except Exception as e:
+                    logger.warning(f"Error scanning session {iterm_session.session_id}: {e}")
+                    continue
+
+    unmanaged = [s for s in discovered if not s["already_managed"]]
+
+    return {
+        "sessions": discovered,
+        "count": len(discovered),
+        "unmanaged_count": len(unmanaged),
+    }
+
+
+@mcp.tool()
+async def import_session(
+    ctx: Context[ServerSession, AppContext],
+    iterm_session_id: str,
+    project_path: str | None = None,
+    session_name: str | None = None,
+) -> dict:
+    """
+    Import an existing iTerm2 Claude Code session into the MCP registry.
+
+    Takes an iTerm2 session ID (from discover_sessions) and registers it
+    for management. This allows you to send messages and get responses
+    from sessions that were started outside this MCP server.
+
+    Args:
+        iterm_session_id: The iTerm2 session ID (from discover_sessions)
+        project_path: Optional explicit project path. If not provided,
+            will attempt to detect from screen content.
+        session_name: Optional friendly name for the session
+
+    Returns:
+        Dict with imported session info, or error if session not found
+    """
+    from .session_state import CLAUDE_PROJECTS_DIR, find_active_session
+
+    app_ctx = ctx.request_context.lifespan_context
+    app = app_ctx.iterm_app
+    registry = app_ctx.registry
+
+    # Check if already managed
+    for managed in registry.list_all():
+        if managed.iterm_session.session_id == iterm_session_id:
+            return {
+                "error": f"Session already managed as '{managed.session_id}'",
+                "existing_session": managed.to_dict(),
+            }
+
+    # Find the iTerm2 session by ID
+    target_session = None
+    for window in app.terminal_windows:
+        for tab in window.tabs:
+            for iterm_session in tab.sessions:
+                if iterm_session.session_id == iterm_session_id:
+                    target_session = iterm_session
+                    break
+            if target_session:
+                break
+        if target_session:
+            break
+
+    if not target_session:
+        return {"error": f"iTerm2 session not found: {iterm_session_id}"}
+
+    # If project_path not provided, try to detect it
+    if not project_path:
+        try:
+            screen_text = await read_screen_text(target_session)
+            lines = screen_text.split("\n")
+
+            # Try to find project from git branch indicator
+            for line in lines:
+                if "git:(" in line:
+                    parts = line.split("git:(")[0].strip().split()
+                    if parts:
+                        project_name = parts[-1]
+                        # Search Claude projects directory
+                        for proj_dir in CLAUDE_PROJECTS_DIR.iterdir():
+                            if proj_dir.is_dir() and project_name in proj_dir.name:
+                                project_path = proj_dir.name.replace("-", "/")
+                                if project_path.startswith("/"):
+                                    break
+                    break
+        except Exception as e:
+            logger.warning(f"Could not detect project path: {e}")
+
+    if not project_path:
+        return {
+            "error": "Could not detect project path. Please provide project_path explicitly.",
+            "iterm_session_id": iterm_session_id,
+        }
+
+    # Validate project path exists
+    if not os.path.isdir(project_path):
+        return {"error": f"Project path does not exist: {project_path}"}
+
+    # Register the session
+    managed = registry.add(
+        iterm_session=target_session,
+        project_path=project_path,
+        name=session_name,
+    )
+
+    # Try to discover Claude session ID from JSONL
+    managed.discover_claude_session()
+
+    # Update status to ready (it's already running)
+    registry.update_status(managed.session_id, SessionStatus.READY)
+
+    return {
+        "success": True,
+        "message": f"Session imported as '{managed.session_id}'",
+        "session": managed.to_dict(),
+    }
+
+
+@mcp.tool()
 async def close_session(
     ctx: Context[ServerSession, AppContext],
     session_id: str,
