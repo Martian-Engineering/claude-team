@@ -15,7 +15,19 @@ src/claude_team_mcp/           # Main MCP server package
 ├── colors.py                  # Golden ratio tab color generation
 └── formatting.py              # Title/badge formatting utilities
 
+scripts/                       # Utility scripts
+└── install-commands.py        # Install slash commands to ~/.claude/commands/
+
 tests/                         # Pytest unit tests
+```
+
+## Scripts
+
+### Install Slash Commands
+```bash
+uv run scripts/install-commands.py           # Interactive install
+uv run scripts/install-commands.py --force   # Overwrite without prompting
+uv run scripts/install-commands.py --dry-run # Preview changes
 ```
 
 ## Key Modules
