@@ -18,6 +18,8 @@ from pathlib import Path
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
+from .colors import generate_tab_color
+from .formatting import format_badge_text, format_session_title
 from .iterm_utils import (
     LAYOUT_PANE_NAMES,
     create_multi_claude_layout,
@@ -27,6 +29,7 @@ from .iterm_utils import (
     split_pane,
     start_claude_in_session,
 )
+from .profile import PROFILE_NAME, get_or_create_profile
 from .registry import SessionRegistry, SessionStatus, TaskInfo
 from .task_completion import (
     TaskContext,
@@ -211,12 +214,16 @@ async def spawn_session(
     layout: str = "new_window",
     skip_permissions: bool = False,
     split_from_session: str | None = None,
+    issue_id: str | None = None,
+    task_description: str | None = None,
+    tab_color: tuple[int, int, int] | None = None,
 ) -> dict:
     """
     Spawn a new Claude Code session in iTerm2.
 
     Creates a new iTerm2 window or pane, starts Claude Code in it,
-    and registers it for management.
+    and registers it for management. Uses the 'claude-team' profile
+    with customizable tab colors and badges.
 
     Args:
         project_path: Directory where Claude Code should run
@@ -225,10 +232,16 @@ async def spawn_session(
         skip_permissions: If True, start Claude with --dangerously-skip-permissions flag
         split_from_session: For split layouts, ID of existing managed session to split from.
             If not provided, splits the currently active iTerm window.
+        issue_id: Optional beads issue ID for tab title/badge (e.g., "cic-3dj")
+        task_description: Optional task description for tab title/badge
+        tab_color: Optional RGB tuple (0-255) for tab color. If not provided,
+            a color is automatically generated based on session count.
 
     Returns:
         Dict with session_id, status, and project_path
     """
+    import iterm2
+
     app_ctx = ctx.request_context.lifespan_context
     connection = app_ctx.iterm_connection
     app = app_ctx.iterm_app
@@ -240,10 +253,43 @@ async def spawn_session(
         return {"error": f"Project path does not exist: {resolved_path}"}
 
     try:
+        # Ensure the claude-team profile exists
+        await get_or_create_profile(connection)
+
+        # Determine session index for color generation (use current session count)
+        session_index = registry.count()
+
+        # Generate display name for the session
+        display_name = session_name or f"session-{session_index}"
+
+        # Create profile customizations
+        profile_customizations = iterm2.LocalWriteOnlyProfile()
+
+        # Set tab title using the formatting module
+        tab_title = format_session_title(display_name, issue_id, task_description)
+        profile_customizations.set_name(tab_title)
+
+        # Set tab color (use provided color or generate one)
+        if tab_color:
+            color = iterm2.Color(r=tab_color[0], g=tab_color[1], b=tab_color[2])
+        else:
+            color = generate_tab_color(session_index)
+        profile_customizations.set_tab_color(color)
+        profile_customizations.set_use_tab_color(True)
+
+        # Set badge text using the formatting module
+        badge_text = format_badge_text(issue_id, task_description)
+        if badge_text:
+            profile_customizations.set_badge_text(badge_text)
+
         # Create iTerm2 session based on layout
         if layout == "new_window":
-            # Create a new window
-            window = await create_window(connection)
+            # Create a new window with profile customizations
+            window = await create_window(
+                connection,
+                profile=PROFILE_NAME,
+                profile_customizations=profile_customizations,
+            )
             iterm_session = window.current_tab.current_session
         elif layout in ("split_vertical", "split_horizontal"):
             vertical = layout == "split_vertical"
@@ -254,17 +300,31 @@ async def spawn_session(
                 source_session = registry.get(split_from_session)
                 if not source_session:
                     return {"error": f"split_from_session not found: {split_from_session}"}
-                iterm_session = await split_pane(source_session.iterm_session, vertical=vertical)
+                iterm_session = await split_pane(
+                    source_session.iterm_session,
+                    vertical=vertical,
+                    profile=PROFILE_NAME,
+                    profile_customizations=profile_customizations,
+                )
             else:
                 # Split the current window's active session (original behavior)
                 current_window = app.current_terminal_window
                 if current_window is None:
                     # No window exists, create one
-                    window = await create_window(connection)
+                    window = await create_window(
+                        connection,
+                        profile=PROFILE_NAME,
+                        profile_customizations=profile_customizations,
+                    )
                     iterm_session = window.current_tab.current_session
                 else:
                     current_session = current_window.current_tab.current_session
-                    iterm_session = await split_pane(current_session, vertical=vertical)
+                    iterm_session = await split_pane(
+                        current_session,
+                        vertical=vertical,
+                        profile=PROFILE_NAME,
+                        profile_customizations=profile_customizations,
+                    )
         else:
             return {"error": f"Invalid layout: {layout}. Use: new_window, split_vertical, split_horizontal"}
 
@@ -316,6 +376,8 @@ async def spawn_team(
 
     Creates a new iTerm2 window with the specified pane layout and starts
     Claude Code in each pane. All sessions are registered for management.
+    Each pane receives a unique tab color from a visually distinct sequence,
+    and badges display the pane position.
 
     Args:
         projects: Dict mapping pane names to project paths. Keys must match
@@ -344,6 +406,8 @@ async def spawn_team(
             layout="quad"
         )
     """
+    import iterm2
+
     app_ctx = ctx.request_context.lifespan_context
     connection = app_ctx.iterm_connection
     registry = app_ctx.registry
@@ -380,6 +444,41 @@ async def spawn_team(
             project_envs[pane_name] = {"BEADS_DIR": beads_dir}
 
     try:
+        # Ensure the claude-team profile exists
+        await get_or_create_profile(connection)
+
+        # Get base session index for color generation
+        base_index = registry.count()
+
+        # Create profile customizations for each pane
+        # Each pane gets a unique color from the sequence and a badge showing position
+        pane_customizations: dict[str, iterm2.LocalWriteOnlyProfile] = {}
+        layout_pane_names = LAYOUT_PANE_NAMES[layout]
+
+        for pane_index, pane_name in enumerate(layout_pane_names):
+            if pane_name not in projects:
+                continue  # Skip panes not being used
+
+            customization = iterm2.LocalWriteOnlyProfile()
+
+            # Generate session name for this pane
+            session_name = f"{layout}_{pane_name}"
+
+            # Set tab title with pane position
+            tab_title = format_session_title(session_name)
+            customization.set_name(tab_title)
+
+            # Set unique tab color for this pane
+            color = generate_tab_color(base_index + pane_index)
+            customization.set_tab_color(color)
+            customization.set_use_tab_color(True)
+
+            # Set badge text to show pane position (e.g., "top_left" -> "top-left")
+            badge_text = pane_name.replace("_", "-")
+            customization.set_badge_text(badge_text)
+
+            pane_customizations[pane_name] = customization
+
         # Create the multi-pane layout and start Claude in each pane
         pane_sessions = await create_multi_claude_layout(
             connection=connection,
@@ -387,9 +486,11 @@ async def spawn_team(
             layout=layout,
             skip_permissions=skip_permissions,
             project_envs=project_envs if project_envs else None,
+            profile=PROFILE_NAME,
+            pane_customizations=pane_customizations,
         )
 
-        # Register all sessions first (this is quick, no I/O)
+        # Register all sessions (this is quick, no I/O)
         managed_sessions = {}
         for pane_name, iterm_session in pane_sessions.items():
             managed = registry.add(

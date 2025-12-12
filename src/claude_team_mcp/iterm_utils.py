@@ -129,18 +129,29 @@ async def read_screen_text(session: "iterm2.Session") -> str:
 # Window Management
 # =============================================================================
 
-async def create_window(connection: "iterm2.Connection") -> "iterm2.Window":
+async def create_window(
+    connection: "iterm2.Connection",
+    profile: Optional[str] = None,
+    profile_customizations: Optional["iterm2.LocalWriteOnlyProfile"] = None,
+) -> "iterm2.Window":
     """
     Create a new iTerm2 window.
 
     Args:
         connection: iTerm2 connection object
+        profile: Optional profile name to use for the window's initial session
+        profile_customizations: Optional LocalWriteOnlyProfile with per-session
+            customizations (tab color, badge, etc.) to apply to the initial session
 
     Returns:
         New window object
     """
     import iterm2
-    return await iterm2.Window.async_create(connection)
+    return await iterm2.Window.async_create(
+        connection,
+        profile=profile,
+        profile_customizations=profile_customizations,
+    )
 
 
 async def create_tab(window: "iterm2.Window") -> "iterm2.Tab":
@@ -160,6 +171,8 @@ async def split_pane(
     session: "iterm2.Session",
     vertical: bool = True,
     before: bool = False,
+    profile: Optional[str] = None,
+    profile_customizations: Optional["iterm2.LocalWriteOnlyProfile"] = None,
 ) -> "iterm2.Session":
     """
     Split an iTerm2 session into two panes.
@@ -168,11 +181,19 @@ async def split_pane(
         session: The session to split
         vertical: If True, split vertically (side by side). If False, horizontal (stacked).
         before: If True, new pane appears before/above. If False, after/below.
+        profile: Optional profile name to use for the new pane
+        profile_customizations: Optional LocalWriteOnlyProfile with per-session
+            customizations (tab color, badge, etc.) to apply to the new pane
 
     Returns:
         The new session created in the split pane.
     """
-    return await session.async_split_pane(vertical=vertical, before=before)
+    return await session.async_split_pane(
+        vertical=vertical,
+        before=before,
+        profile=profile,
+        profile_customizations=profile_customizations,
+    )
 
 
 async def close_pane(session: "iterm2.Session", force: bool = False) -> bool:
@@ -343,6 +364,8 @@ LAYOUT_PANE_NAMES = {
 async def create_multi_pane_layout(
     connection: "iterm2.Connection",
     layout: str,
+    profile: Optional[str] = None,
+    pane_customizations: Optional[dict[str, "iterm2.LocalWriteOnlyProfile"]] = None,
 ) -> dict[str, "iterm2.Session"]:
     """
     Create a new iTerm2 window with a multi-pane layout.
@@ -357,6 +380,9 @@ async def create_multi_pane_layout(
             - "horizontal": 2 panes stacked (top, bottom)
             - "quad": 4 panes in 2x2 grid (top_left, top_right, bottom_left, bottom_right)
             - "triple_vertical": 3 panes side by side (left, middle, right)
+        profile: Optional profile name to use for all panes
+        pane_customizations: Optional dict mapping pane names to LocalWriteOnlyProfile
+            objects with per-pane customizations (tab color, badge, etc.)
 
     Returns:
         Dict mapping pane names to iTerm2 sessions
@@ -369,8 +395,21 @@ async def create_multi_pane_layout(
             f"Unknown layout: {layout}. Valid: {list(LAYOUT_PANE_NAMES.keys())}"
         )
 
-    # Create window with initial session
-    window = await create_window(connection)
+    # Helper to get customizations for a specific pane
+    def get_customization(pane_name: str):
+        if pane_customizations:
+            return pane_customizations.get(pane_name)
+        return None
+
+    # Get the first pane name for the initial window
+    first_pane = LAYOUT_PANE_NAMES[layout][0]
+
+    # Create window with initial session (with customizations if provided)
+    window = await create_window(
+        connection,
+        profile=profile,
+        profile_customizations=get_customization(first_pane),
+    )
     initial_session = window.current_tab.current_session
 
     panes: dict[str, "iterm2.Session"] = {}
@@ -378,12 +417,22 @@ async def create_multi_pane_layout(
     if layout == "vertical":
         # Split into left and right
         panes["left"] = initial_session
-        panes["right"] = await split_pane(initial_session, vertical=True)
+        panes["right"] = await split_pane(
+            initial_session,
+            vertical=True,
+            profile=profile,
+            profile_customizations=get_customization("right"),
+        )
 
     elif layout == "horizontal":
         # Split into top and bottom
         panes["top"] = initial_session
-        panes["bottom"] = await split_pane(initial_session, vertical=False)
+        panes["bottom"] = await split_pane(
+            initial_session,
+            vertical=False,
+            profile=profile,
+            profile_customizations=get_customization("bottom"),
+        )
 
     elif layout == "quad":
         # Create 2x2 grid:
@@ -391,24 +440,49 @@ async def create_multi_pane_layout(
         # 2. Split left horizontally: top_left / bottom_left
         # 3. Split right horizontally: top_right / bottom_right
         left = initial_session
-        right = await split_pane(left, vertical=True)
+        right = await split_pane(
+            left,
+            vertical=True,
+            profile=profile,
+            profile_customizations=get_customization("top_right"),
+        )
 
         # Split the left column
         panes["top_left"] = left
-        panes["bottom_left"] = await split_pane(left, vertical=False)
+        panes["bottom_left"] = await split_pane(
+            left,
+            vertical=False,
+            profile=profile,
+            profile_customizations=get_customization("bottom_left"),
+        )
 
         # Split the right column
         panes["top_right"] = right
-        panes["bottom_right"] = await split_pane(right, vertical=False)
+        panes["bottom_right"] = await split_pane(
+            right,
+            vertical=False,
+            profile=profile,
+            profile_customizations=get_customization("bottom_right"),
+        )
 
     elif layout == "triple_vertical":
         # Create 3 vertical panes: left | middle | right
         # 1. Split initial into 2
         # 2. Split right pane into 2 more
         panes["left"] = initial_session
-        right_section = await split_pane(initial_session, vertical=True)
+        right_section = await split_pane(
+            initial_session,
+            vertical=True,
+            profile=profile,
+            profile_customizations=get_customization("middle"),
+        )
         panes["middle"] = right_section
-        panes["right"] = await split_pane(right_section, vertical=True)
+        panes["right"] = await split_pane(
+            right_section,
+            vertical=True,
+            profile=profile,
+            profile_customizations=get_customization("right"),
+        )
 
     return panes
 
@@ -419,6 +493,8 @@ async def create_multi_claude_layout(
     layout: str,
     skip_permissions: bool = False,
     project_envs: Optional[dict[str, dict[str, str]]] = None,
+    profile: Optional[str] = None,
+    pane_customizations: Optional[dict[str, "iterm2.LocalWriteOnlyProfile"]] = None,
 ) -> dict[str, "iterm2.Session"]:
     """
     Create a multi-pane window and start Claude Code in each pane.
@@ -435,6 +511,9 @@ async def create_multi_claude_layout(
         skip_permissions: If True, start Claude with --dangerously-skip-permissions
         project_envs: Optional dict mapping pane names to env var dicts. Each
             pane can have its own environment variables set before starting Claude.
+        profile: Optional profile name to use for all panes
+        pane_customizations: Optional dict mapping pane names to LocalWriteOnlyProfile
+            objects with per-pane customizations (tab color, badge, etc.)
 
     Returns:
         Dict mapping pane names to iTerm2 sessions (after Claude is started)
@@ -455,8 +534,13 @@ async def create_multi_claude_layout(
             f"Valid names: {expected_panes}"
         )
 
-    # Create the pane layout
-    panes = await create_multi_pane_layout(connection, layout)
+    # Create the pane layout with profile customizations
+    panes = await create_multi_pane_layout(
+        connection,
+        layout,
+        profile=profile,
+        pane_customizations=pane_customizations,
+    )
 
     # Start Claude in all panes in parallel.
     # Each start_claude_in_session call uses wait_for_shell_ready() internally
