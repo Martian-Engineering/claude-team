@@ -290,6 +290,7 @@ async def spawn_session(
     project_path: str,
     session_name: str | None = None,
     layout: str = "new_window",
+    auto_layout: bool = False,
     skip_permissions: bool = False,
     split_from_session: str | None = None,
     issue_id: str | None = None,
@@ -307,8 +308,11 @@ async def spawn_session(
         project_path: Directory where Claude Code should run
         session_name: Optional friendly name for the session
         layout: How to create the session - "new_window", "split_vertical", "split_horizontal",
-            or "auto" (default "new_window"). When "auto" or auto_layout=True, intelligently
-            reuses existing windows with available pane slots.
+            or "auto" (default "new_window"). When "auto", intelligently reuses existing
+            windows with available pane slots (< 4 panes).
+        auto_layout: When True, overrides layout to use smart window selection. Finds
+            windows managed by claude-team with < 4 panes and splits there. Falls back
+            to creating a new window if no room is available.
         skip_permissions: If True, start Claude with --dangerously-skip-permissions flag
         split_from_session: For split layouts, ID of existing managed session to split from.
             If not provided, splits the currently active iTerm window.
@@ -318,7 +322,8 @@ async def spawn_session(
             a color is automatically generated based on session count.
 
     Returns:
-        Dict with session_id, status, and project_path
+        Dict with session_id, status, project_path, and layout_info describing
+        what layout strategy was used (including auto_layout details).
     """
     import iterm2
 
@@ -375,8 +380,53 @@ async def spawn_session(
             profile_customizations.set_badge_color(badge_color)
 
         # Create iTerm2 session based on layout
-        layout_info = {"layout_used": layout}  # Default, may be updated below
-        if layout == "new_window":
+        # Handle auto_layout parameter - it overrides the layout setting
+        effective_layout = layout
+        if auto_layout or layout == "auto":
+            effective_layout = "auto"
+
+        layout_info = {"layout_used": effective_layout}  # Default, may be updated below
+
+        if effective_layout == "auto":
+            # Smart layout: find an existing window with available pane slots
+            available = await find_available_window(app, max_panes=MAX_PANES_PER_TAB)
+
+            if available:
+                # Found a window with room - split an existing pane there
+                window, tab, source_session = available
+                pane_count = count_panes_in_tab(tab)
+
+                # Use vertical split for 2nd pane, horizontal for 3rd/4th to create quad-like layout
+                vertical = pane_count < 2
+
+                iterm_session = await split_pane(
+                    source_session,
+                    vertical=vertical,
+                    profile=PROFILE_NAME,
+                    profile_customizations=profile_customizations,
+                )
+                layout_info = {
+                    "layout_used": "auto",
+                    "auto_layout_result": "reused_window",
+                    "split_direction": "vertical" if vertical else "horizontal",
+                    "panes_in_tab_before": pane_count,
+                    "panes_in_tab_after": pane_count + 1,
+                }
+            else:
+                # No available window - create a new one
+                window = await create_window(
+                    connection,
+                    profile=PROFILE_NAME,
+                    profile_customizations=profile_customizations,
+                )
+                iterm_session = window.current_tab.current_session
+                layout_info = {
+                    "layout_used": "auto",
+                    "auto_layout_result": "new_window",
+                    "reason": "no_available_window_with_room",
+                }
+
+        elif effective_layout == "new_window":
             # Create a new window with profile customizations
             window = await create_window(
                 connection,
@@ -384,8 +434,9 @@ async def spawn_session(
                 profile_customizations=profile_customizations,
             )
             iterm_session = window.current_tab.current_session
-        elif layout in ("split_vertical", "split_horizontal"):
-            vertical = layout == "split_vertical"
+
+        elif effective_layout in ("split_vertical", "split_horizontal"):
+            vertical = effective_layout == "split_vertical"
 
             # Determine which session to split from
             if split_from_session:
@@ -424,8 +475,8 @@ async def spawn_session(
                     )
         else:
             return error_response(
-                f"Invalid layout: {layout}",
-                hint="Valid layouts are: new_window, split_vertical, split_horizontal",
+                f"Invalid layout: {effective_layout}",
+                hint="Valid layouts are: new_window, split_vertical, split_horizontal, auto",
             )
 
         # Register the session before starting Claude (so we track it even if startup fails)
