@@ -630,7 +630,12 @@ async def discover_sessions(
             - count: Total number of Claude sessions found
             - unmanaged_count: Number not yet imported into registry
     """
-    from .session_state import CLAUDE_PROJECTS_DIR, find_active_session, list_sessions
+    from .session_state import (
+        CLAUDE_PROJECTS_DIR,
+        find_active_session,
+        list_sessions,
+        unslugify_path,
+    )
 
     app_ctx = ctx.request_context.lifespan_context
     app = app_ctx.iterm_app
@@ -692,11 +697,10 @@ async def discover_sessions(
                                 # Try to find this project in Claude's projects dir
                                 for proj_dir in CLAUDE_PROJECTS_DIR.iterdir():
                                     if proj_dir.is_dir() and project_name in proj_dir.name:
-                                        # Reconstruct project path from slug
-                                        # Slug is like -Users-phaedrus-Projects-myproject
-                                        # Convert back to /Users/phaedrus/Projects/myproject
-                                        reconstructed = proj_dir.name.replace("-", "/")
-                                        if reconstructed.startswith("/"):
+                                        # Use unslugify_path to handle hyphens in names
+                                        # correctly (e.g., claude-iterm-controller)
+                                        reconstructed = unslugify_path(proj_dir.name)
+                                        if reconstructed:
                                             project_path = reconstructed
                                             break
                             break

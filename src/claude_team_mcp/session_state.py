@@ -96,6 +96,66 @@ def get_project_slug(project_path: str) -> str:
     return project_path.replace("/", "-")
 
 
+def unslugify_path(slug: str) -> str | None:
+    """
+    Convert a Claude project slug back to a filesystem path.
+
+    The slug replaces / with -, but project names can also contain -.
+    We resolve the ambiguity by checking which paths actually exist.
+
+    Args:
+        slug: Claude project directory slug (e.g., "-Users-phaedrus-Projects-myproject")
+
+    Returns:
+        The original filesystem path if it can be determined, None otherwise.
+
+    Example:
+        "-Users-phaedrus-Projects-claude-iterm-controller"
+        -> "/Users/phaedrus/Projects/claude-iterm-controller"
+    """
+    if not slug.startswith("-"):
+        return None
+
+    # Split the slug into parts (removing the leading -)
+    # Each part was originally separated by / or is part of a hyphenated name
+    parts = slug[1:].split("-")
+
+    # Greedy algorithm: at each step, try to find the longest sequence
+    # of parts that forms an existing directory (or the final path component)
+    result_parts: list[str] = []
+    i = 0
+
+    while i < len(parts):
+        found = False
+        # Try longest possible component first (most hyphens preserved)
+        for j in range(len(parts), i, -1):
+            candidate_component = "-".join(parts[i:j])
+            candidate_path = "/" + "/".join(result_parts + [candidate_component])
+
+            # For the final component, check if path exists (file or dir)
+            # For intermediate components, must be a directory
+            if j == len(parts):
+                if Path(candidate_path).exists():
+                    result_parts.append(candidate_component)
+                    i = j
+                    found = True
+                    break
+            else:
+                if Path(candidate_path).is_dir():
+                    result_parts.append(candidate_component)
+                    i = j
+                    found = True
+                    break
+
+        if not found:
+            # No existing path found, use single part and continue
+            result_parts.append(parts[i])
+            i += 1
+
+    final_path = "/" + "/".join(result_parts)
+    return final_path if Path(final_path).exists() else None
+
+
 def get_project_dir(project_path: str) -> Path:
     """
     Get the Claude projects directory for a given project path.
