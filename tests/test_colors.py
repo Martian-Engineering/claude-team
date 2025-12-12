@@ -104,9 +104,9 @@ class TestGenerateTabColor:
             # Verify Color was called with RGB values
             mock_iterm2.Color.assert_called_once()
             call_kwargs = mock_iterm2.Color.call_args[1]
-            assert 'red' in call_kwargs
-            assert 'green' in call_kwargs
-            assert 'blue' in call_kwargs
+            assert 'r' in call_kwargs
+            assert 'g' in call_kwargs
+            assert 'b' in call_kwargs
 
     def test_different_indices_produce_different_colors(self):
         """Different indices should produce different colors."""
@@ -115,7 +115,7 @@ class TestGenerateTabColor:
 
         def capture_color(**kwargs):
             color = MagicMock()
-            color.rgb = (kwargs['red'], kwargs['green'], kwargs['blue'])
+            color.rgb = (kwargs['r'], kwargs['g'], kwargs['b'])
             mock_colors.append(color)
             return color
 
