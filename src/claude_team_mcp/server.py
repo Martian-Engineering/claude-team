@@ -27,6 +27,7 @@ from .iterm_utils import (
     split_pane,
     start_claude_in_session,
 )
+from .profile import ensure_profile_exists
 from .registry import SessionRegistry, SessionStatus, TaskInfo
 from .task_completion import (
     TaskContext,
@@ -240,6 +241,9 @@ async def spawn_session(
         return {"error": f"Project path does not exist: {resolved_path}"}
 
     try:
+        # Ensure the claude-team profile exists (creates if needed, cached after first call)
+        await ensure_profile_exists(connection)
+
         # Create iTerm2 session based on layout
         if layout == "new_window":
             # Create a new window
@@ -380,6 +384,9 @@ async def spawn_team(
             project_envs[pane_name] = {"BEADS_DIR": beads_dir}
 
     try:
+        # Ensure the claude-team profile exists (creates if needed, cached after first call)
+        await ensure_profile_exists(connection)
+
         # Create the multi-pane layout and start Claude in each pane
         pane_sessions = await create_multi_claude_layout(
             connection=connection,

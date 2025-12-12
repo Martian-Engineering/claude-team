@@ -3,12 +3,30 @@ iTerm2 Profile Management for Claude Team MCP
 
 Handles creation and customization of iTerm2 profiles for managed Claude sessions.
 Includes automatic dark/light mode detection and consistent visual styling.
+
+Profile Creation Strategy:
+- Uses iTerm2's Dynamic Profiles feature for persistent profile creation
+- Creates a JSON file in ~/Library/Application Support/iTerm2/DynamicProfiles/
+- Falls back to session-level customizations if profile creation fails
 """
 
 from typing import Optional
+import json
 import logging
+import os
+from pathlib import Path
 
 logger = logging.getLogger("claude-team-mcp.profile")
+
+
+# =============================================================================
+# Profile Cache
+# =============================================================================
+
+# Cache to track whether we've already ensured the profile exists this session.
+# This avoids redundant filesystem checks on every spawn_session call.
+_profile_ensured: bool = False
+_profile_creation_failed: bool = False
 
 
 # =============================================================================
@@ -25,6 +43,12 @@ FONT_SIZE = 12
 
 # Tab title format template: [session-name] issue-id: description
 TAB_TITLE_FORMAT = "[{session_name}] {issue_id}: {description}"
+
+# iTerm2 Dynamic Profiles directory path
+DYNAMIC_PROFILES_DIR = Path.home() / "Library/Application Support/iTerm2/DynamicProfiles"
+
+# Our dynamic profile filename
+DYNAMIC_PROFILE_FILENAME = "claude-team-profile.json"
 
 
 # =============================================================================
@@ -81,6 +105,273 @@ COLORS_DARK = {
     "ansi_cyan": (0, 206, 209),
     "ansi_white": (255, 255, 255),
 }
+
+
+# =============================================================================
+# Dynamic Profile Creation
+# =============================================================================
+
+
+def _rgb_to_iterm_color(rgb: tuple[int, int, int]) -> dict:
+    """
+    Convert an RGB tuple to iTerm2's dynamic profile color format.
+
+    iTerm2 dynamic profiles expect colors as dictionaries with "Red", "Green",
+    "Blue" keys and float values in 0.0-1.0 range.
+
+    Args:
+        rgb: Tuple of (red, green, blue) values in 0-255 range
+
+    Returns:
+        Dictionary with iTerm2 color format
+    """
+    return {
+        "Red Component": rgb[0] / 255.0,
+        "Green Component": rgb[1] / 255.0,
+        "Blue Component": rgb[2] / 255.0,
+    }
+
+
+def _check_font_available(font_name: str) -> bool:
+    """
+    Check if a font is available on the system.
+
+    Uses the macOS font system to check availability.
+
+    Args:
+        font_name: Name of the font to check
+
+    Returns:
+        True if font is available, False otherwise
+    """
+    try:
+        # Use subprocess to query macOS font list
+        import subprocess
+
+        result = subprocess.run(
+            ["system_profiler", "SPFontsDataType"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return font_name in result.stdout
+    except Exception:
+        # If we can't check, assume font is not available
+        return False
+
+
+def _build_dynamic_profile_dict() -> dict:
+    """
+    Build the dynamic profile dictionary for iTerm2.
+
+    Creates a profile configuration with:
+    - Name: claude-team
+    - Font: Source Code Pro 12pt (fallback to Menlo if unavailable)
+    - Window style: Maximized
+    - Dark mode colors (default)
+
+    Returns:
+        Dictionary suitable for writing to a dynamic profile JSON file
+    """
+    # Check which font to use
+    font_name = FONT_PRIMARY
+    if not _check_font_available(FONT_PRIMARY):
+        logger.info(
+            f"Font '{FONT_PRIMARY}' not available, using fallback '{FONT_FALLBACK}'"
+        )
+        font_name = FONT_FALLBACK
+
+    # Use dark mode colors as default (most common for terminal use)
+    colors = COLORS_DARK
+
+    # Build the profile configuration.
+    # iTerm2 dynamic profiles use specific key names - see:
+    # https://iterm2.com/documentation-dynamic-profiles.html
+    profile = {
+        "Name": PROFILE_NAME,
+        "Guid": f"{PROFILE_NAME}-guid",
+        # Font: format is "FontName Size" for Normal Font
+        "Normal Font": f"{font_name} {FONT_SIZE}",
+        # Window style: 3 = Maximized (0=normal, 1=fullscreen, 2=maximized high, 3=maximized)
+        "Initial Window Type": 3,
+        # Tab color enabled
+        "Use Tab Color": True,
+        # Smart cursor color
+        "Smart Cursor Color": True,
+        # Terminal colors
+        "Foreground Color": _rgb_to_iterm_color(colors["foreground"]),
+        "Background Color": _rgb_to_iterm_color(colors["background"]),
+        "Cursor Color": _rgb_to_iterm_color(colors["cursor"]),
+        "Selection Color": _rgb_to_iterm_color(colors["selection"]),
+        "Bold Color": _rgb_to_iterm_color(colors["bold"]),
+        # ANSI colors
+        "Ansi 0 Color": _rgb_to_iterm_color(colors["ansi_black"]),
+        "Ansi 1 Color": _rgb_to_iterm_color(colors["ansi_red"]),
+        "Ansi 2 Color": _rgb_to_iterm_color(colors["ansi_green"]),
+        "Ansi 3 Color": _rgb_to_iterm_color(colors["ansi_yellow"]),
+        "Ansi 4 Color": _rgb_to_iterm_color(colors["ansi_blue"]),
+        "Ansi 5 Color": _rgb_to_iterm_color(colors["ansi_magenta"]),
+        "Ansi 6 Color": _rgb_to_iterm_color(colors["ansi_cyan"]),
+        "Ansi 7 Color": _rgb_to_iterm_color(colors["ansi_white"]),
+        # Bright ANSI colors (same as normal for this profile)
+        "Ansi 8 Color": _rgb_to_iterm_color(colors["ansi_black"]),
+        "Ansi 9 Color": _rgb_to_iterm_color(colors["ansi_red"]),
+        "Ansi 10 Color": _rgb_to_iterm_color(colors["ansi_green"]),
+        "Ansi 11 Color": _rgb_to_iterm_color(colors["ansi_yellow"]),
+        "Ansi 12 Color": _rgb_to_iterm_color(colors["ansi_blue"]),
+        "Ansi 13 Color": _rgb_to_iterm_color(colors["ansi_magenta"]),
+        "Ansi 14 Color": _rgb_to_iterm_color(colors["ansi_cyan"]),
+        "Ansi 15 Color": _rgb_to_iterm_color(colors["ansi_white"]),
+    }
+
+    return profile
+
+
+def _create_dynamic_profile_file() -> bool:
+    """
+    Create the dynamic profile JSON file for iTerm2.
+
+    Creates the DynamicProfiles directory if needed and writes the profile JSON.
+    iTerm2 automatically detects and loads profiles from this directory.
+
+    Returns:
+        True if profile was created successfully, False otherwise
+    """
+    global _profile_creation_failed
+
+    try:
+        # Ensure the DynamicProfiles directory exists
+        DYNAMIC_PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+
+        profile_path = DYNAMIC_PROFILES_DIR / DYNAMIC_PROFILE_FILENAME
+
+        # Build the profile
+        profile = _build_dynamic_profile_dict()
+
+        # Dynamic profiles file format: {"Profiles": [profile1, profile2, ...]}
+        profile_data = {"Profiles": [profile]}
+
+        # Write the profile file
+        with open(profile_path, "w") as f:
+            json.dump(profile_data, f, indent=2)
+
+        logger.info(f"Created dynamic profile '{PROFILE_NAME}' at {profile_path}")
+        return True
+
+    except PermissionError as e:
+        logger.warning(f"Permission denied creating dynamic profile: {e}")
+        _profile_creation_failed = True
+        return False
+    except Exception as e:
+        logger.warning(f"Failed to create dynamic profile: {e}")
+        _profile_creation_failed = True
+        return False
+
+
+def _dynamic_profile_exists() -> bool:
+    """
+    Check if our dynamic profile file already exists.
+
+    Returns:
+        True if the profile file exists, False otherwise
+    """
+    profile_path = DYNAMIC_PROFILES_DIR / DYNAMIC_PROFILE_FILENAME
+    return profile_path.exists()
+
+
+async def profile_exists_in_iterm(connection: "iterm2.Connection") -> bool:
+    """
+    Check if the claude-team profile exists in iTerm2.
+
+    Queries iTerm2's profile list via the Python API to check if our
+    profile has been loaded (either from dynamic profiles or manually created).
+
+    Args:
+        connection: Active iTerm2 connection
+
+    Returns:
+        True if profile exists, False otherwise
+    """
+    try:
+        import iterm2
+
+        all_profiles = await iterm2.PartialProfile.async_query(connection)
+        profile_names = [p.name for p in all_profiles if p.name]
+        return PROFILE_NAME in profile_names
+    except Exception as e:
+        logger.warning(f"Could not query iTerm2 profiles: {e}")
+        return False
+
+
+async def ensure_profile_exists(connection: "iterm2.Connection") -> str:
+    """
+    Ensure the claude-team profile exists, creating it if necessary.
+
+    This is the main entry point for profile auto-creation. It:
+    1. Checks the cache to avoid redundant work
+    2. Checks if profile already exists in iTerm2
+    3. If not, creates a dynamic profile JSON file
+    4. Falls back gracefully if creation fails
+
+    The result is cached for the session lifetime to avoid repeated checks.
+
+    Args:
+        connection: Active iTerm2 connection
+
+    Returns:
+        The profile name to use (PROFILE_NAME if successful, None if failed
+        and caller should use default profile with customizations)
+    """
+    global _profile_ensured, _profile_creation_failed
+
+    # Fast path: already ensured this session
+    if _profile_ensured:
+        if _profile_creation_failed:
+            return None  # Signal to use fallback
+        return PROFILE_NAME
+
+    # Check if profile already exists in iTerm2
+    if await profile_exists_in_iterm(connection):
+        logger.debug(f"Profile '{PROFILE_NAME}' already exists in iTerm2")
+        _profile_ensured = True
+        return PROFILE_NAME
+
+    # Check if our dynamic profile file exists (might not be loaded yet)
+    if _dynamic_profile_exists():
+        logger.debug(
+            f"Dynamic profile file exists but not loaded in iTerm2. "
+            f"iTerm2 may need to reload profiles or restart."
+        )
+        _profile_ensured = True
+        return PROFILE_NAME
+
+    # Create the dynamic profile
+    logger.info(f"Profile '{PROFILE_NAME}' not found, creating dynamic profile...")
+    if _create_dynamic_profile_file():
+        _profile_ensured = True
+        # Note: iTerm2 should auto-detect the new profile, but it may take a moment.
+        # For immediate use, the caller can fall back to session customizations.
+        return PROFILE_NAME
+
+    # Creation failed - fallback mode
+    logger.warning(
+        f"Could not create profile '{PROFILE_NAME}'. "
+        f"Using default profile with customizations."
+    )
+    _profile_ensured = True
+    _profile_creation_failed = True
+    return None
+
+
+def reset_profile_cache() -> None:
+    """
+    Reset the profile cache.
+
+    Useful for testing or if the profile needs to be re-checked.
+    """
+    global _profile_ensured, _profile_creation_failed
+    _profile_ensured = False
+    _profile_creation_failed = False
 
 
 # =============================================================================
