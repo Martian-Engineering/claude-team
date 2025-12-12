@@ -21,11 +21,20 @@ For each task that's ready to start:
 Use the claude-team MCP tools to spawn workers:
 - Use `spawn_session` or `spawn_team` depending on count
 - Set `skip_permissions: true` for autonomous work
-- Send each worker a clear, single-line task description including:
-  - The beads issue ID
-  - What to implement
-  - Reminder to use `bd --no-db` for beads in worktrees
-  - Reminder to commit their work when done
+- Send each worker a task prompt that includes the **full workflow**:
+
+**Task prompt template:**
+```
+Work on <issue-id>: <description>
+
+Workflow (follow exactly):
+1. Mark in progress: bd --no-db update <issue-id> --status in_progress
+2. Implement the changes
+3. Close issue: bd --no-db close <issue-id>
+4. Commit with issue reference: git add -A && git commit -m "<issue-id>: <summary>"
+
+Use bd --no-db for all beads commands (required in worktrees).
+```
 
 ### 4. Monitor Progress
 Periodically check on workers using `get_session_status`:
