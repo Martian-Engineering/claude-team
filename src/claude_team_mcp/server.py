@@ -389,7 +389,15 @@ async def spawn_session(
 
         if effective_layout == "auto":
             # Smart layout: find an existing window with available pane slots
-            available = await find_available_window(app, max_panes=MAX_PANES_PER_TAB)
+            # Only consider windows that contain sessions managed by claude-team
+            managed_session_ids = {
+                s.iterm_session.session_id for s in registry.list_all()
+            }
+            available = await find_available_window(
+                app,
+                max_panes=MAX_PANES_PER_TAB,
+                managed_session_ids=managed_session_ids if managed_session_ids else None,
+            )
 
             if available:
                 # Found a window with room - split an existing pane there

@@ -706,21 +706,41 @@ def count_panes_in_window(window: "iterm2.Window") -> int:
 async def find_available_window(
     app: "iterm2.App",
     max_panes: int = MAX_PANES_PER_TAB,
+    managed_session_ids: Optional[set[str]] = None,
 ) -> Optional[tuple["iterm2.Window", "iterm2.Tab", "iterm2.Session"]]:
     """
     Find a window with an available tab that has room for more panes.
 
-    Searches all terminal windows for a tab with fewer than max_panes sessions.
-    Returns the window, tab, and a session in that tab that can be split.
+    Searches terminal windows for a tab with fewer than max_panes sessions.
+    If managed_session_ids is provided, only considers windows that contain
+    at least one managed session (to avoid splitting into user's unrelated windows).
 
     Args:
         app: iTerm2 app object
         max_panes: Maximum panes before considering a tab full (default 4)
+        managed_session_ids: Optional set of iTerm2 session IDs that are managed
+            by claude-team. If provided, only windows containing at least one
+            of these sessions will be considered.
 
     Returns:
         Tuple of (window, tab, session) if found, None if all tabs are full
     """
     for window in app.terminal_windows:
+        # If we have managed session IDs, check if this window contains any
+        if managed_session_ids is not None:
+            window_has_managed_session = False
+            for tab in window.tabs:
+                for session in tab.sessions:
+                    if session.session_id in managed_session_ids:
+                        window_has_managed_session = True
+                        break
+                if window_has_managed_session:
+                    break
+            if not window_has_managed_session:
+                # Skip this window - it doesn't contain any managed sessions
+                continue
+
+        # Check if any tab has room for more panes
         for tab in window.tabs:
             pane_count = count_panes_in_tab(tab)
             if pane_count < max_panes:
