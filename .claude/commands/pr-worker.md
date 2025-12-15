@@ -11,19 +11,26 @@ Create a pull request from a worker's branch: $ARGUMENTS
    - Get session info via `get_session_status`
    - Find the worktree/branch from project path
 
-3. Gather PR information:
-   - Get commits on branch: `git log main..<branch> --oneline`
-   - Get changed files: `git diff main..<branch> --stat`
+3. Detect the parent branch (branch the worktree diverged from):
+   ```bash
+   git merge-base --fork-point main <branch> || \
+   git merge-base --fork-point $(git branch --show-current) <branch>
+   ```
+   Or check git reflog for the branch point. If unclear, ask user.
+
+4. Gather PR information:
+   - Get commits on branch: `git log <parent>..<branch> --oneline`
+   - Get changed files: `git diff <parent>..<branch> --stat`
    - Extract issue ID from branch name if present
 
-4. Push branch if not already pushed:
+5. Push branch if not already pushed:
    ```bash
    git push -u origin <branch>
    ```
 
-5. Create PR using gh CLI:
+6. Create PR using gh CLI (targeting parent branch):
    ```bash
-   gh pr create --title "<issue-id>: <summary>" --body "$(cat <<'EOF'
+   gh pr create --base <parent-branch> --title "<issue-id>: <summary>" --body "$(cat <<'EOF'
    ## Summary
    <bullet points from commits>
 
@@ -40,7 +47,7 @@ Create a pull request from a worker's branch: $ARGUMENTS
    )"
    ```
 
-6. Report the PR URL
+7. Report the PR URL
 
 ## Output Format
 

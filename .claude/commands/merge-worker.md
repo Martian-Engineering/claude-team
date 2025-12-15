@@ -1,6 +1,6 @@
 # Merge Worker
 
-Directly merge a worker's branch to main: $ARGUMENTS
+Directly merge a worker's branch back to its parent branch: $ARGUMENTS
 
 Use this for small/internal changes that don't need PR review.
 For changes that need review, use `/pr-worker` instead.
@@ -10,32 +10,40 @@ For changes that need review, use `/pr-worker` instead.
 1. Identify the worker session or branch from $ARGUMENTS
    - Can be session ID (e.g., "worker-1") or branch name (e.g., "cic-abc/feature")
 
-2. Verify the work is complete:
+2. Detect the parent branch (branch the worktree diverged from):
+   ```bash
+   # Find the merge base with common branches
+   git merge-base --fork-point main <branch> || \
+   git merge-base --fork-point $(git branch --show-current) <branch>
+   ```
+   Or check git reflog for the branch point. If unclear, ask user.
+
+3. Verify the work is complete:
    - Check for TASK_COMPLETE marker or closed beads issue
-   - Review commits: `git log main..<branch> --oneline`
+   - Review commits: `git log <parent>..<branch> --oneline`
    - If not clearly complete, ask user to confirm before merging
 
-3. Ensure main is up to date:
+4. Ensure parent branch is up to date:
    ```bash
-   git checkout main
+   git checkout <parent-branch>
    git pull
    ```
 
-4. Merge the branch:
+5. Merge the branch:
    ```bash
    git merge <branch> --no-ff -m "Merge <branch>: <summary>"
    ```
 
-5. Handle merge conflicts if any:
+6. Handle merge conflicts if any:
    - Report conflicts to user
    - Do NOT auto-resolve without user confirmation
 
-6. Push main:
+7. Push parent branch:
    ```bash
    git push
    ```
 
-7. Clean up:
+8. Clean up:
    - Remove worktree: `git worktree remove .worktrees/<id>`
    - Delete branch: `git branch -d <branch>`
    - Close session if still open: `close_session`
@@ -46,7 +54,7 @@ For changes that need review, use `/pr-worker` instead.
 ## Merge Complete
 
 **Branch:** cic-abc/feature-name
-**Merged to:** main
+**Merged to:** <parent-branch>
 **Commits:** 3
 
 ### Changes Merged
@@ -59,7 +67,7 @@ For changes that need review, use `/pr-worker` instead.
 - Branch deleted: cic-abc/feature-name
 - Session closed: worker-1
 
-**Main branch pushed to origin.**
+**<parent-branch> pushed to origin.**
 ```
 
 ## Notes
