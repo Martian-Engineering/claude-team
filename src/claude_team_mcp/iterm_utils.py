@@ -250,6 +250,9 @@ async def create_window(
     )
     await window.async_set_frame(frame)
 
+    # Bring window to focus
+    await window.async_activate()
+
     return window
 
 
