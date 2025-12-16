@@ -394,6 +394,104 @@ async def wait_for_shell_ready(
 
 
 # =============================================================================
+# JSONL Session Detection
+# =============================================================================
+
+
+def get_claude_projects_dir() -> Path:
+    """
+    Get the Claude projects directory path.
+
+    Returns:
+        Path to ~/.claude/projects/
+    """
+    return Path.home() / ".claude" / "projects"
+
+
+def project_path_to_slug(project_path: str) -> str:
+    """
+    Convert a project path to Claude's slug format.
+
+    Claude stores conversations at ~/.claude/projects/{slug}/{session}.jsonl
+    where slug is the project path with '/' replaced by '-'.
+
+    Args:
+        project_path: Absolute project path (e.g., /Users/josh/code)
+
+    Returns:
+        Slug string (e.g., -Users-josh-code)
+    """
+    return project_path.replace("/", "-")
+
+
+async def wait_for_jsonl_session(
+    project_path: str,
+    poll_interval_ms: int = 200,
+    timeout_seconds: float = 10.0,
+    min_file_size: int = 1,
+) -> Optional[Path]:
+    """
+    Wait for a JSONL session file to be created for a project.
+
+    Polls the Claude projects directory for new JSONL files matching the
+    project slug. Returns when a file exists with content (size > 0).
+
+    Args:
+        project_path: Absolute project path
+        poll_interval_ms: Milliseconds between polls (default 200ms)
+        timeout_seconds: Maximum wait time (default 10s)
+        min_file_size: Minimum file size in bytes to consider valid (default 1)
+
+    Returns:
+        Path to the JSONL file if found, None if timeout reached
+    """
+    import asyncio
+    import time
+
+    slug = project_path_to_slug(project_path)
+    projects_dir = get_claude_projects_dir()
+    slug_dir = projects_dir / slug
+
+    start_time = time.monotonic()
+    poll_interval_sec = poll_interval_ms / 1000.0
+
+    # Track files that existed before we started polling so we can detect new ones
+    existing_files: set[str] = set()
+    if slug_dir.exists():
+        existing_files = {f.name for f in slug_dir.glob("*.jsonl")}
+
+    while (time.monotonic() - start_time) < timeout_seconds:
+        try:
+            if slug_dir.exists():
+                # Look for JSONL files
+                for jsonl_file in slug_dir.glob("*.jsonl"):
+                    # Check if this is a new file or existing file with content
+                    try:
+                        file_size = jsonl_file.stat().st_size
+                        if file_size >= min_file_size:
+                            # File exists and has content - Claude has initialized
+                            logger.debug(
+                                f"Found JSONL session file: {jsonl_file} "
+                                f"(size={file_size} bytes)"
+                            )
+                            return jsonl_file
+                    except OSError:
+                        # File may have been deleted/moved, continue checking
+                        continue
+        except Exception as e:
+            # Directory access failed, retry on next poll
+            logger.debug(f"Error checking for JSONL files: {e}")
+
+        await asyncio.sleep(poll_interval_sec)
+
+    logger.warning(
+        f"Timeout waiting for JSONL session file for project {project_path} "
+        f"(slug={slug}, timeout={timeout_seconds}s)"
+    )
+    return None
+
+
+# =============================================================================
 # Claude Session Control
 # =============================================================================
 
@@ -401,28 +499,32 @@ async def start_claude_in_session(
     session: "iterm2.Session",
     project_path: str,
     resume_session: Optional[str] = None,
-    wait_seconds: float = 3.0,
     dangerously_skip_permissions: bool = False,
     env: Optional[dict[str, str]] = None,
     shell_ready_timeout: float = 10.0,
-) -> None:
+    jsonl_poll_interval_ms: int = 200,
+    jsonl_timeout_seconds: float = 10.0,
+) -> Optional[Path]:
     """
     Start Claude Code in an existing iTerm2 session.
 
     Changes to the project directory and launches Claude Code. Waits for shell
-    readiness before sending commands to prevent garbled input.
+    readiness before sending commands, then polls for JSONL session file
+    creation to detect when Claude has fully initialized.
 
     Args:
         session: iTerm2 session to use
         project_path: Directory to run Claude in
         resume_session: Optional session ID to resume
-        wait_seconds: Time to wait for Claude to initialize after starting
         dangerously_skip_permissions: If True, start with --dangerously-skip-permissions
         env: Optional dict of environment variables to set before running claude
         shell_ready_timeout: Max seconds to wait for shell prompt before each command
-    """
-    import asyncio
+        jsonl_poll_interval_ms: Milliseconds between JSONL file checks (default 200ms)
+        jsonl_timeout_seconds: Max seconds to wait for JSONL file creation (default 10s)
 
+    Returns:
+        Path to the JSONL session file if found, None if timeout reached
+    """
     # Wait for shell to be ready before sending cd command
     await wait_for_shell_ready(session, timeout_seconds=shell_ready_timeout)
 
@@ -446,8 +548,15 @@ async def start_claude_in_session(
 
     await send_prompt(session, cmd)
 
-    # Wait for Claude to initialize
-    await asyncio.sleep(wait_seconds)
+    # Wait for Claude to initialize by polling for JSONL session file creation.
+    # This replaces the previous hardcoded sleep with active detection.
+    jsonl_path = await wait_for_jsonl_session(
+        project_path=project_path,
+        poll_interval_ms=jsonl_poll_interval_ms,
+        timeout_seconds=jsonl_timeout_seconds,
+    )
+
+    return jsonl_path
 
 
 # =============================================================================

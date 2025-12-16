@@ -582,11 +582,10 @@ async def spawn_session(
         if beads_dir:
             env = {"BEADS_DIR": beads_dir}
 
-        # Start Claude Code in the session
+        # Start Claude Code in the session (uses JSONL polling to detect initialization)
         await start_claude_in_session(
             session=iterm_session,
             project_path=resolved_path,
-            wait_seconds=4.0,
             dangerously_skip_permissions=skip_permissions,
             env=env,
         )
