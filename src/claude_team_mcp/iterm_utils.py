@@ -7,9 +7,10 @@ from the original primitives.py for use in the MCP server.
 
 import logging
 import re
-import subprocess
 from typing import Optional, Callable
 from pathlib import Path
+
+from .subprocess_cache import cached_system_profiler
 
 logger = logging.getLogger("claude-team-mcp.iterm_utils")
 
@@ -161,15 +162,14 @@ def _calculate_screen_frame() -> tuple[float, float, float, float]:
         Tuple of (x, y, width, height) in points for the window frame.
     """
     try:
-        result = subprocess.run(
-            ["system_profiler", "SPDisplaysDataType"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        # Use cached system_profiler to avoid repeated slow calls
+        stdout = cached_system_profiler("SPDisplaysDataType")
+        if stdout is None:
+            logger.warning("system_profiler failed, using default frame")
+            return (0.0, 25.0, 1400.0, 900.0)
 
         # Parse resolution from output like "Resolution: 3840 x 2160"
-        match = re.search(r"Resolution: (\d+) x (\d+)", result.stdout)
+        match = re.search(r"Resolution: (\d+) x (\d+)", stdout)
         if not match:
             logger.warning("Could not parse screen resolution, using defaults")
             return (0.0, 25.0, 1400.0, 900.0)
@@ -177,7 +177,7 @@ def _calculate_screen_frame() -> tuple[float, float, float, float]:
         screen_w, screen_h = int(match.group(1)), int(match.group(2))
 
         # Detect Retina display (2x scale factor)
-        scale = 2 if "Retina" in result.stdout else 1
+        scale = 2 if "Retina" in stdout else 1
         logical_w = screen_w // scale
         logical_h = screen_h // scale
 
@@ -194,9 +194,6 @@ def _calculate_screen_frame() -> tuple[float, float, float, float]:
         )
         return (x, y, width, height)
 
-    except subprocess.TimeoutExpired:
-        logger.warning("system_profiler timed out, using default frame")
-        return (0.0, 25.0, 1400.0, 900.0)
     except Exception as e:
         logger.warning(f"Failed to calculate screen frame: {e}")
         return (0.0, 25.0, 1400.0, 900.0)
