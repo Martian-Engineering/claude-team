@@ -522,16 +522,12 @@ async def start_claude_in_session(
     Returns:
         Path to the JSONL session file if found, None if timeout reached
     """
-    # Wait for shell to be ready before sending cd command
+    # Wait for shell to be ready before sending the combined cd && claude command.
+    # We use a single wait and combine the commands with && to ensure cd succeeds
+    # before claude runs, while avoiding the latency of two separate wait cycles.
     await wait_for_shell_ready(session, timeout_seconds=shell_ready_timeout)
 
-    # Change to project directory
-    await send_prompt(session, f"cd {project_path}")
-
-    # Wait for shell to be ready after cd before sending claude command
-    await wait_for_shell_ready(session, timeout_seconds=shell_ready_timeout)
-
-    # Build and run claude command
+    # Build claude command with flags
     cmd = "claude"
     if dangerously_skip_permissions:
         cmd += " --dangerously-skip-permissions"
@@ -543,7 +539,9 @@ async def start_claude_in_session(
         env_exports = " ".join(f"{k}={v}" for k, v in env.items())
         cmd = f"{env_exports} {cmd}"
 
-    await send_prompt(session, cmd)
+    # Combine cd and claude into single command - cd must succeed for claude to run
+    combined_cmd = f"cd {project_path} && {cmd}"
+    await send_prompt(session, combined_cmd)
 
     # Wait for Claude to initialize by polling for JSONL session file creation.
     # This replaces the previous hardcoded sleep with active detection.
