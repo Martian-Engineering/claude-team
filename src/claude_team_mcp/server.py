@@ -613,6 +613,15 @@ async def spawn_session(
         # Update status to ready
         registry.update_status(managed.session_id, SessionStatus.READY)
 
+        # Re-activate the window to bring it to focus after all setup is complete.
+        # The initial activation in create_window() happens early, but focus can
+        # shift back to the coordinator window during the Claude startup process.
+        try:
+            window = iterm_session.tab.window
+            await window.async_activate()
+        except Exception as e:
+            logger.debug(f"Failed to re-activate window: {e}")
+
         # Include layout info in response
         result = managed.to_dict()
         result.update(layout_info)
@@ -842,6 +851,17 @@ async def spawn_team(
                 managed.discover_claude_session()
             registry.update_status(managed.session_id, SessionStatus.READY)
             result_sessions[pane_name] = managed.to_dict()
+
+        # Re-activate the window to bring it to focus after all setup is complete.
+        # The initial activation in create_window() happens early, but focus can
+        # shift back to the coordinator window during the Claude startup process.
+        try:
+            # Get window from any of the sessions (they're all in the same window)
+            any_session = next(iter(pane_sessions.values()))
+            window = any_session.tab.window
+            await window.async_activate()
+        except Exception as e:
+            logger.debug(f"Failed to re-activate window: {e}")
 
         return {
             "sessions": result_sessions,
