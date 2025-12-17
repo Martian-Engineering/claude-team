@@ -1,0 +1,148 @@
+"""Tests for the worker_prompt module."""
+
+import pytest
+
+from claude_team_mcp.worker_prompt import (
+    generate_worker_prompt,
+    get_coordinator_guidance,
+    COORDINATOR_GUIDANCE,
+)
+
+
+class TestGenerateWorkerPrompt:
+    """Tests for generate_worker_prompt function."""
+
+    def test_includes_session_id(self):
+        """Prompt should include the session ID."""
+        prompt = generate_worker_prompt("worker-abc123", "John")
+        assert "worker-abc123" in prompt
+
+    def test_includes_session_id_in_marker(self):
+        """Prompt should include session ID in the marker tag."""
+        prompt = generate_worker_prompt("worker-xyz", "Paul")
+        assert "<!claude-team-session:worker-xyz!>" in prompt
+
+    def test_includes_worker_name(self):
+        """Prompt should address the worker by name."""
+        prompt = generate_worker_prompt("worker-1", "Ringo")
+        assert "Ringo" in prompt
+
+    def test_includes_evaluate_first_rule(self):
+        """Prompt should contain the 'evaluate first' instruction."""
+        prompt = generate_worker_prompt("test-session", "George")
+        assert "Evaluate first" in prompt
+
+    def test_includes_complete_or_flag_rule(self):
+        """Prompt should contain the 'complete or flag' instruction."""
+        prompt = generate_worker_prompt("test-session", "TestWorker")
+        assert "Complete or flag" in prompt
+
+    def test_includes_beads_discipline_rule(self):
+        """Prompt should contain beads discipline instructions."""
+        prompt = generate_worker_prompt("test-session", "TestWorker")
+        assert "Beads discipline" in prompt
+        assert "bd update" in prompt
+        assert "bd comment" in prompt
+
+    def test_includes_flag_blocker_command(self):
+        """Prompt should mention flag_blocker with session ID."""
+        prompt = generate_worker_prompt("my-session-id", "Worker")
+        assert "flag_blocker" in prompt
+        assert 'flag_blocker("my-session-id"' in prompt
+
+    def test_includes_never_close_beads_instruction(self):
+        """Prompt should instruct workers not to close beads."""
+        prompt = generate_worker_prompt("test", "Worker")
+        assert "Never close beads" in prompt
+
+    def test_includes_bd_help_reference(self):
+        """Prompt should mention bd_help tool."""
+        prompt = generate_worker_prompt("test", "Worker")
+        assert "bd_help" in prompt
+
+    def test_session_id_appears_multiple_times(self):
+        """Session ID should appear in marker and flag_blocker example."""
+        prompt = generate_worker_prompt("unique-id-12345", "Worker")
+        # Should appear at least twice: in marker and in flag_blocker example
+        assert prompt.count("unique-id-12345") >= 2
+
+    def test_different_sessions_produce_different_prompts(self):
+        """Different session IDs should produce different prompts."""
+        prompt1 = generate_worker_prompt("session-a", "Alice")
+        prompt2 = generate_worker_prompt("session-b", "Bob")
+        assert prompt1 != prompt2
+        assert "session-a" in prompt1
+        assert "session-b" in prompt2
+
+    def test_prompt_is_non_empty_string(self):
+        """Prompt should be a non-empty string."""
+        prompt = generate_worker_prompt("test", "Worker")
+        assert isinstance(prompt, str)
+        assert len(prompt) > 100  # Should be substantial
+
+
+class TestGetCoordinatorGuidance:
+    """Tests for get_coordinator_guidance function."""
+
+    def test_returns_non_empty_string(self):
+        """Should return a non-empty string."""
+        guidance = get_coordinator_guidance()
+        assert isinstance(guidance, str)
+        assert len(guidance) > 0
+
+    def test_returns_coordinator_guidance_constant(self):
+        """Should return the COORDINATOR_GUIDANCE constant."""
+        guidance = get_coordinator_guidance()
+        assert guidance == COORDINATOR_GUIDANCE
+
+    def test_contains_coordinator_marker(self):
+        """Guidance should identify the coordinator role."""
+        guidance = get_coordinator_guidance()
+        assert "COORDINATOR" in guidance
+
+    def test_mentions_list_sessions(self):
+        """Guidance should mention list_sessions command."""
+        guidance = get_coordinator_guidance()
+        assert "list_sessions" in guidance
+
+    def test_mentions_clear_blocker(self):
+        """Guidance should mention clear_blocker command."""
+        guidance = get_coordinator_guidance()
+        assert "clear_blocker" in guidance
+
+    def test_mentions_annotate_session(self):
+        """Guidance should mention annotate_session command."""
+        guidance = get_coordinator_guidance()
+        assert "annotate_session" in guidance
+
+    def test_mentions_get_conversation_history(self):
+        """Guidance should mention get_conversation_history command."""
+        guidance = get_coordinator_guidance()
+        assert "get_conversation_history" in guidance
+
+    def test_mentions_monitoring_blockers(self):
+        """Guidance should explain blocker monitoring."""
+        guidance = get_coordinator_guidance()
+        assert "blocker" in guidance.lower()
+
+    def test_mentions_reviewing_beads(self):
+        """Guidance should mention reviewing and closing beads."""
+        guidance = get_coordinator_guidance()
+        assert "close bead" in guidance.lower() or "close" in guidance
+
+
+class TestCoordinatorGuidanceConstant:
+    """Tests for the COORDINATOR_GUIDANCE constant."""
+
+    def test_is_non_empty_string(self):
+        """COORDINATOR_GUIDANCE should be a non-empty string."""
+        assert isinstance(COORDINATOR_GUIDANCE, str)
+        assert len(COORDINATOR_GUIDANCE) > 100
+
+    def test_contains_worker_expectations(self):
+        """Should describe what workers have been told."""
+        assert "What workers have been told" in COORDINATOR_GUIDANCE
+
+    def test_contains_coordinator_responsibilities(self):
+        """Should list coordinator responsibilities."""
+        assert "responsibilities" in COORDINATOR_GUIDANCE.lower()
