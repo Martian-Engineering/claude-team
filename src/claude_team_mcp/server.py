@@ -794,6 +794,12 @@ async def check_blockers(
     # Pattern to match <!BLOCKED:reason!>
     blocker_pattern = re.compile(r"<!BLOCKED:(.+?)!>", re.DOTALL)
 
+    # Example text from the pre-prompt to ignore
+    example_reasons = {
+        "reason here",
+        "Need API credentials to test authentication flow",
+    }
+
     blockers = []
     for session in sessions:
         state = session.get_conversation_state()
@@ -808,10 +814,14 @@ async def check_blockers(
             # Message.content is already extracted text
             matches = blocker_pattern.findall(msg.content)
             for reason in matches:
+                reason_stripped = reason.strip()
+                # Skip examples from the pre-prompt
+                if reason_stripped in example_reasons:
+                    continue
                 blockers.append({
                     "session_id": session.session_id,
                     "name": session.name,
-                    "reason": reason.strip(),
+                    "reason": reason_stripped,
                     "message_uuid": msg.uuid,
                 })
 
