@@ -1502,13 +1502,15 @@ async def get_session_status(
     result = session.to_dict()
 
     # Get conversation stats from JSONL
+    # Use state.conversation (messages with content) for consistent counts
     state = session.get_conversation_state()
     if state:
-        user_msgs = [m for m in state.messages if m.role == "user"]
-        assistant_msgs = [m for m in state.messages if m.role == "assistant"]
+        convo = state.conversation  # Only messages with text content
+        user_msgs = [m for m in convo if m.role == "user"]
+        assistant_msgs = [m for m in convo if m.role == "assistant"]
 
         result["conversation_stats"] = {
-            "total_messages": len(state.messages),
+            "total_messages": len(convo),
             "user_messages": len(user_msgs),
             "assistant_messages": len(assistant_msgs),
             "last_user_prompt": (
@@ -2258,13 +2260,15 @@ async def resource_session_status(
     result = session.to_dict()
 
     # Get conversation stats from JSONL
+    # Use state.conversation (messages with content) for consistent counts
     state = session.get_conversation_state()
     if state:
-        user_msgs = [m for m in state.messages if m.role == "user"]
-        assistant_msgs = [m for m in state.messages if m.role == "assistant"]
+        convo = state.conversation  # Only messages with text content
+        user_msgs = [m for m in convo if m.role == "user"]
+        assistant_msgs = [m for m in convo if m.role == "assistant"]
 
         result["conversation_stats"] = {
-            "total_messages": len(state.messages),
+            "total_messages": len(convo),
             "user_messages": len(user_msgs),
             "assistant_messages": len(assistant_msgs),
             "last_user_prompt": (
