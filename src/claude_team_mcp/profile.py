@@ -26,7 +26,7 @@ logger = logging.getLogger("claude-team-mcp.profile")
 # =============================================================================
 
 # Cache to track whether we've already ensured the profile exists this session.
-# This avoids redundant filesystem checks on every spawn_session call.
+# This avoids redundant filesystem checks on every spawn_team call.
 _profile_ensured: bool = False
 _profile_creation_failed: bool = False
 

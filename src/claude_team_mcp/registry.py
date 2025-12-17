@@ -5,9 +5,11 @@ Tracks all spawned Claude Code sessions, maintaining the mapping between
 our session IDs, iTerm2 session objects, and Claude JSONL session IDs.
 """
 
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 from .session_state import find_active_session, get_project_dir, parse_session
@@ -70,6 +72,14 @@ class ManagedSession:
     current_task: Optional[TaskInfo] = None  # Currently delegated task
     task_history: list[TaskInfo] = field(default_factory=list)  # Completed tasks
 
+    # Blocker tracking for coordinator oversight
+    blocker_reason: Optional[str] = None  # Why this session is blocked
+    blocker_at: Optional[datetime] = None  # When blocker was set
+
+    # Coordinator annotations and worktree tracking
+    controller_annotation: Optional[str] = None  # Notes from coordinator about assignment
+    worktree_path: Optional[Path] = None  # Path to worker's git worktree if any
+
     def to_dict(self) -> dict:
         """Convert to dictionary for MCP tool responses."""
         result = {
@@ -81,6 +91,11 @@ class ManagedSession:
             "created_at": self.created_at.isoformat(),
             "last_activity": self.last_activity.isoformat(),
             "has_active_task": self.current_task is not None,
+            "is_blocked": self.is_blocked(),
+            "blocker_reason": self.blocker_reason,
+            "blocker_at": self.blocker_at.isoformat() if self.blocker_at else None,
+            "controller_annotation": self.controller_annotation,
+            "worktree_path": str(self.worktree_path) if self.worktree_path else None,
         }
         if self.current_task:
             result["current_task"] = self.current_task.to_dict()
@@ -218,6 +233,32 @@ class ManagedSession:
         self.update_activity()
         return completed
 
+    def set_blocker(self, reason: str) -> None:
+        """
+        Mark this session as blocked with a reason.
+
+        Args:
+            reason: Description of why this session is blocked
+        """
+        self.blocker_reason = reason
+        self.blocker_at = datetime.now()
+        self.update_activity()
+
+    def clear_blocker(self) -> None:
+        """Clear the blocker status from this session."""
+        self.blocker_reason = None
+        self.blocker_at = None
+        self.update_activity()
+
+    def is_blocked(self) -> bool:
+        """
+        Check if this session is currently blocked.
+
+        Returns:
+            True if blocker_reason is set, False otherwise
+        """
+        return self.blocker_reason is not None
+
 
 class SessionRegistry:
     """
@@ -230,12 +271,10 @@ class SessionRegistry:
     def __init__(self):
         """Initialize an empty registry."""
         self._sessions: dict[str, ManagedSession] = {}
-        self._counter: int = 0
 
-    def _generate_id(self, prefix: str = "worker") -> str:
-        """Generate a unique session ID."""
-        self._counter += 1
-        return f"{prefix}-{self._counter}"
+    def _generate_id(self) -> str:
+        """Generate a unique session ID as short UUID."""
+        return str(uuid.uuid4())[:8]  # e.g., "a3f2b1c9"
 
     def add(
         self,
@@ -315,6 +354,15 @@ class SessionRegistry:
             List of matching ManagedSession objects
         """
         return [s for s in self._sessions.values() if s.status == status]
+
+    def list_blocked(self) -> list[ManagedSession]:
+        """
+        Get all sessions that have a blocker set.
+
+        Returns:
+            List of ManagedSession objects with blockers
+        """
+        return [s for s in self._sessions.values() if s.is_blocked()]
 
     def remove(self, session_id: str) -> Optional[ManagedSession]:
         """
