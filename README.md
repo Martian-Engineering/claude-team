@@ -50,7 +50,7 @@ After adding the configuration, restart Claude Code for it to take effect.
 
 | Tool | Description |
 |------|-------------|
-| `spawn_session` | Create a new Claude Code session in a new window or split pane |
+| `spawn_team` | Create one or more Claude Code sessions in a multi-pane layout |
 | `list_sessions` | List all managed sessions with status |
 | `send_message` | Send a prompt to a session, optionally wait for response |
 | `get_response` | Get the latest response from a session |
@@ -59,15 +59,17 @@ After adding the configuration, restart Claude Code for it to take effect.
 
 ### Tool Details
 
-#### spawn_session
+#### spawn_team
 ```
 Arguments:
-  project_path: str      - Directory where Claude Code should run
-  session_name: str      - Optional friendly name for the session
-  layout: str            - "new_window", "split_vertical", or "split_horizontal"
+  projects: dict[str, str]  - Dict mapping pane names to project paths
+  layout: str               - "vertical", "horizontal", "quad", or "triple_vertical"
+  skip_permissions: bool    - If True, start Claude with --dangerously-skip-permissions
 
 Returns:
-  session_id, name, project_path, status, claude_session_id
+  sessions: dict mapping pane names to session info
+  layout: the layout used
+  count: number of sessions created
 ```
 
 #### send_message
@@ -101,8 +103,8 @@ From your Claude Code session, you can spawn workers and send them tasks:
 
 ```
 "Spawn a new Claude session in /path/to/frontend"
-→ Uses spawn_session tool
-→ Returns session_id: "worker-1"
+→ Uses spawn_team tool
+→ Returns session info with session_id
 
 "Send worker-1 the message: Review the React components"
 → Uses send_message tool
@@ -151,7 +153,7 @@ Use the manager to coordinate between workers:
 │              (has claude-team MCP server)                    │
 ├─────────────────────────────────────────────────────────────┤
 │                    MCP Tools                                 │
-│  spawn_session │ send_message │ get_response │ list_sessions │
+│  spawn_team │ send_message │ get_response │ list_sessions    │
 └────────────────┬────────────────────────────────────────────┘
                  │
         ┌────────┼────────┐

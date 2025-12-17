@@ -453,6 +453,7 @@ async def start_claude_in_session(
 
 # Valid pane names for each layout type
 LAYOUT_PANE_NAMES = {
+    "single": ["main"],
     "vertical": ["left", "right"],
     "horizontal": ["top", "bottom"],
     "quad": ["top_left", "top_right", "bottom_left", "bottom_right"],
@@ -475,6 +476,7 @@ async def create_multi_pane_layout(
     Args:
         connection: iTerm2 connection object
         layout: Layout type - one of:
+            - "single": 1 pane, full window (main)
             - "vertical": 2 panes side by side (left, right)
             - "horizontal": 2 panes stacked (top, bottom)
             - "quad": 4 panes in 2x2 grid (top_left, top_right, bottom_left, bottom_right)
@@ -513,7 +515,11 @@ async def create_multi_pane_layout(
 
     panes: dict[str, "iterm2.Session"] = {}
 
-    if layout == "vertical":
+    if layout == "single":
+        # Single pane - no splitting needed, just use initial session
+        panes["main"] = initial_session
+
+    elif layout == "vertical":
         # Split into left and right
         panes["left"] = initial_session
         panes["right"] = await split_pane(
@@ -606,7 +612,7 @@ async def create_multi_claude_layout(
         projects: Dict mapping pane names to project paths. Keys must match
             the expected pane names for the layout (e.g., for 'quad':
             'top_left', 'top_right', 'bottom_left', 'bottom_right')
-        layout: Layout type (vertical, horizontal, quad, triple_vertical)
+        layout: Layout type (single, vertical, horizontal, quad, triple_vertical)
         skip_permissions: If True, start Claude with --dangerously-skip-permissions
         project_envs: Optional dict mapping pane names to env var dicts. Each
             pane can have its own environment variables set before starting Claude.

@@ -32,6 +32,7 @@ from .iterm_utils import (
     split_pane,
     start_claude_in_session,
 )
+from .names import NAME_SETS, pick_names
 from .profile import PROFILE_NAME, get_or_create_profile
 from .registry import SessionRegistry, SessionStatus, TaskInfo
 from .task_completion import (
@@ -41,6 +42,8 @@ from .task_completion import (
     detect_task_completion,
     wait_for_task_completion,
 )
+from .worker_prompt import generate_worker_prompt, get_coordinator_guidance
+from .worktree import WorktreeError, create_worktree, remove_worktree
 
 # Configure logging
 logging.basicConfig(
@@ -93,7 +96,7 @@ HINTS = {
         "iTerm2 → Preferences → General → Magic → Enable Python API"
     ),
     "registry_empty": (
-        "No sessions are being managed. Use spawn_session to create a new session, "
+        "No sessions are being managed. Use spawn_team to create a new session, "
         "or discover_sessions to find existing Claude sessions in iTerm2"
     ),
     "split_session_not_found": (
@@ -107,7 +110,7 @@ HINTS = {
         "successfully in the terminal"
     ),
     "session_closed": (
-        "This session has been closed. Use spawn_session to create a new one, "
+        "This session has been closed. Use spawn_team to create a new one, "
         "or list_sessions to find other active sessions"
     ),
     "no_active_task": (
@@ -351,288 +354,17 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-async def spawn_session(
-    ctx: Context[ServerSession, AppContext],
-    project_path: str,
-    session_name: str | None = None,
-    layout: str = "new_window",
-    auto_layout: bool = False,
-    skip_permissions: bool = False,
-    split_from_session: str | None = None,
-    issue_id: str | None = None,
-    task_description: str | None = None,
-    tab_color: tuple[int, int, int] | None = None,
-) -> dict:
-    """
-    Spawn a new Claude Code session in iTerm2.
-
-    Creates a new iTerm2 window or pane, starts Claude Code in it,
-    and registers it for management. Uses the 'claude-team' profile
-    with customizable tab colors and badges.
-
-    Args:
-        project_path: Directory where Claude Code should run
-        session_name: Optional friendly name for the session
-        layout: How to create the session - "new_window", "split_vertical", "split_horizontal",
-            or "auto" (default "new_window"). When "auto", intelligently reuses existing
-            windows with available pane slots (< 4 panes).
-        auto_layout: When True, overrides layout to use smart window selection. Finds
-            windows managed by claude-team with < 4 panes and splits there. Falls back
-            to creating a new window if no room is available.
-        skip_permissions: If True, start Claude with --dangerously-skip-permissions flag
-        split_from_session: For split layouts, ID of existing managed session to split from.
-            If not provided, splits the currently active iTerm window.
-        issue_id: Optional beads issue ID for tab title/badge (e.g., "cic-3dj")
-        task_description: Optional task description for tab title/badge
-        tab_color: Optional RGB tuple (0-255) for tab color. If not provided,
-            a color is automatically generated based on session count.
-
-    Returns:
-        Dict with session_id, status, project_path, and layout_info describing
-        what layout strategy was used (including auto_layout details).
-    """
-    import iterm2
-
-    app_ctx = ctx.request_context.lifespan_context
-    registry = app_ctx.registry
-
-    # Ensure we have a fresh connection (websocket can go stale)
-    connection, app = await ensure_connection(app_ctx)
-
-    # Validate project path
-    resolved_path = os.path.abspath(os.path.expanduser(project_path))
-    if not os.path.isdir(resolved_path):
-        return error_response(
-            f"Project path does not exist: {resolved_path}",
-            hint=HINTS["project_path_missing"],
-        )
-
-    try:
-        # Ensure the claude-team profile exists
-        await get_or_create_profile(connection)
-
-        # Determine session index for color generation (use current session count)
-        session_index = registry.count()
-
-        # Generate display name for the session
-        display_name = session_name or f"session-{session_index}"
-
-        # Create profile customizations
-        profile_customizations = iterm2.LocalWriteOnlyProfile()
-
-        # Set tab title using the formatting module
-        tab_title = format_session_title(display_name, issue_id, task_description)
-        profile_customizations.set_name(tab_title)
-
-        # Set tab color (use provided color or generate one)
-        if tab_color:
-            color = iterm2.Color(r=tab_color[0], g=tab_color[1], b=tab_color[2])
-        else:
-            color = generate_tab_color(session_index)
-        profile_customizations.set_tab_color(color)
-        profile_customizations.set_use_tab_color(True)
-
-        # Set badge text using the formatting module
-        badge_text = format_badge_text(issue_id, task_description)
-        if badge_text:
-            profile_customizations.set_badge_text(badge_text)
-            # Configure badge appearance (smaller, subtle)
-            profile_customizations.set_badge_font("Menlo 12")
-            profile_customizations.set_badge_max_width(0.3)
-            profile_customizations.set_badge_max_height(0.2)
-            profile_customizations.set_badge_right_margin(10)
-            profile_customizations.set_badge_top_margin(10)
-            # Light gray, semi-transparent so it doesn't obscure terminal
-            badge_color = iterm2.Color(128, 128, 128, 50)
-            profile_customizations.set_badge_color(badge_color)
-
-        # Create iTerm2 session based on layout
-        # Handle auto_layout parameter - it overrides the layout setting
-        effective_layout = layout
-        if auto_layout or layout == "auto":
-            effective_layout = "auto"
-
-        layout_info = {"layout_used": effective_layout}  # Default, may be updated below
-
-        if effective_layout == "auto":
-            # Smart layout: find an existing window with available pane slots
-            # Only consider windows that contain sessions managed by claude-team
-            managed_session_ids = {
-                s.iterm_session.session_id for s in registry.list_all()
-            }
-            available = await find_available_window(
-                app,
-                max_panes=MAX_PANES_PER_TAB,
-                managed_session_ids=managed_session_ids if managed_session_ids else None,
-            )
-
-            if available:
-                # Found a window with room - split an existing pane there
-                window, tab, source_session = available
-                pane_count = count_panes_in_tab(tab)
-
-                # Use vertical split for 2nd pane, horizontal for 3rd/4th to create quad-like layout
-                vertical = pane_count < 2
-
-                # Choose the correct split source for proper 2x2 quad layout:
-                # - pane_count=1: split any session vertically → left | right
-                # - pane_count=2: split sessions[0] (left) horizontally → TL, BL | right
-                # - pane_count=3: split the right pane horizontally → 2x2 quad
-                #
-                # After vertical split: sessions = [left, right]
-                # After horizontal split of left: sessions = [top-left, bottom-left, right]
-                # So for 3→4, we need sessions[-1] (the last one, which is right)
-                if pane_count == 2:
-                    # Split the first session (left pane) to create top-left and bottom-left
-                    split_source = tab.sessions[0]
-                elif pane_count == 3:
-                    # Split the last session (right pane) to complete the 2x2 quad
-                    # After the 2→3 split, right pane ends up as the last session
-                    split_source = tab.sessions[-1]
-                else:
-                    # For first split (1→2), use whatever session we have
-                    split_source = source_session
-
-                iterm_session = await split_pane(
-                    split_source,
-                    vertical=vertical,
-                    profile=PROFILE_NAME,
-                    profile_customizations=profile_customizations,
-                )
-                layout_info = {
-                    "layout_used": "auto",
-                    "auto_layout_result": "reused_window",
-                    "split_direction": "vertical" if vertical else "horizontal",
-                    "panes_in_tab_before": pane_count,
-                    "panes_in_tab_after": pane_count + 1,
-                }
-            else:
-                # No available window - create a new one
-                window = await create_window(
-                    connection,
-                    profile=PROFILE_NAME,
-                    profile_customizations=profile_customizations,
-                )
-                iterm_session = window.current_tab.current_session
-                layout_info = {
-                    "layout_used": "auto",
-                    "auto_layout_result": "new_window",
-                    "reason": "no_available_window_with_room",
-                }
-
-        elif effective_layout == "new_window":
-            # Create a new window with profile customizations
-            window = await create_window(
-                connection,
-                profile=PROFILE_NAME,
-                profile_customizations=profile_customizations,
-            )
-            iterm_session = window.current_tab.current_session
-
-        elif effective_layout in ("split_vertical", "split_horizontal"):
-            vertical = effective_layout == "split_vertical"
-
-            # Determine which session to split from
-            if split_from_session:
-                # Split from a specific managed session
-                source_session = registry.get(split_from_session)
-                if not source_session:
-                    return error_response(
-                        f"split_from_session not found: {split_from_session}",
-                        hint=HINTS["split_session_not_found"],
-                    )
-                iterm_session = await split_pane(
-                    source_session.iterm_session,
-                    vertical=vertical,
-                    profile=PROFILE_NAME,
-                    profile_customizations=profile_customizations,
-                )
-            else:
-                # Split the current window's active session (original behavior)
-                current_window = app.current_terminal_window
-                if current_window is None:
-                    # No window exists, create one
-                    window = await create_window(
-                        connection,
-                        profile=PROFILE_NAME,
-                        profile_customizations=profile_customizations,
-                    )
-                    iterm_session = window.current_tab.current_session
-                    layout_info = {"layout_used": "new_window", "reason": "no_existing_window"}
-                else:
-                    current_session = current_window.current_tab.current_session
-                    iterm_session = await split_pane(
-                        current_session,
-                        vertical=vertical,
-                        profile=PROFILE_NAME,
-                        profile_customizations=profile_customizations,
-                    )
-        else:
-            return error_response(
-                f"Invalid layout: {effective_layout}",
-                hint="Valid layouts are: new_window, split_vertical, split_horizontal, auto",
-            )
-
-        # Register the session before starting Claude (so we track it even if startup fails)
-        managed = registry.add(
-            iterm_session=iterm_session,
-            project_path=resolved_path,
-            name=session_name,
-        )
-
-        # Check if this is a git worktree and set BEADS_DIR if needed
-        env = None
-        beads_dir = get_worktree_beads_dir(resolved_path)
-        if beads_dir:
-            env = {"BEADS_DIR": beads_dir}
-
-        # Start Claude Code in the session
-        await start_claude_in_session(
-            session=iterm_session,
-            project_path=resolved_path,
-            wait_seconds=4.0,
-            dangerously_skip_permissions=skip_permissions,
-            env=env,
-        )
-
-        # Send marker message for JSONL correlation
-        from .session_state import generate_marker_message
-
-        marker_message = generate_marker_message(managed.session_id)
-        await send_prompt(iterm_session, marker_message, submit=True)
-
-        # Wait for marker to be logged, then discover by marker
-        await asyncio.sleep(2)  # Give Claude time to process and log the marker
-        if not managed.discover_claude_session_by_marker():
-            # Fallback to old discovery if marker not found
-            logger.warning(
-                f"Marker-based discovery failed for {managed.session_id}, "
-                "falling back to timestamp-based discovery"
-            )
-            managed.discover_claude_session()
-
-        # Update status to ready
-        registry.update_status(managed.session_id, SessionStatus.READY)
-
-        # Include layout info in response
-        result = managed.to_dict()
-        result.update(layout_info)
-        return result
-
-    except Exception as e:
-        logger.error(f"Failed to spawn session: {e}")
-        return error_response(
-            str(e),
-            hint=HINTS["iterm_connection"],
-        )
-
-
-@mcp.tool()
 async def spawn_team(
     ctx: Context[ServerSession, AppContext],
-    projects: dict[str, str | dict],
-    layout: str = "quad",
+    projects: dict[str, str],
+    layout: str = "auto",
     skip_permissions: bool = False,
+    name_set: str | None = None,
+    custom_names: list[str] | None = None,
+    custom_prompt: str | None = None,
+    include_beads_instructions: bool = True,
+    use_worktrees: bool = False,
+    branch: str | None = None,
 ) -> dict:
     """
     Spawn multiple Claude Code sessions in a multi-pane layout.
@@ -640,41 +372,84 @@ async def spawn_team(
     Creates a new iTerm2 window with the specified pane layout and starts
     Claude Code in each pane. All sessions are registered for management.
     Each pane receives a unique tab color from a visually distinct sequence,
-    and badges display issue/task information.
+    and badges display iconic names (e.g., "Groucho", "John").
+
+    **Two Modes:**
+
+    1. **Standard Mode** (default, custom_prompt=None):
+       - Sends a pre-built worker pre-prompt to each session explaining
+         the coordination workflow (blocker flagging, beads discipline, etc.)
+       - Returns `coordinator_guidance` with instructions for the coordinator
+       - Best for general-purpose coordinated work
+
+    2. **Custom Mode** (custom_prompt provided):
+       - Sends your custom_prompt to each worker instead of the standard pre-prompt
+       - If include_beads_instructions=True, appends beads guidance to your prompt
+       - Does NOT return coordinator_guidance (you're in charge of the workflow)
+       - Best for specialized workflows or when workers need specific instructions
 
     Args:
-        projects: Dict mapping pane names to project config. Keys must match
+        projects: Dict mapping pane names to project paths. Keys must match
             the layout's pane names:
+            - "single": ["main"]
             - "vertical": ["left", "right"]
             - "horizontal": ["top", "bottom"]
             - "quad": ["top_left", "top_right", "bottom_left", "bottom_right"]
             - "triple_vertical": ["left", "middle", "right"]
-
-            Values can be either:
-            - A string (project path) for simple usage
-            - A dict with keys:
-                - "path" (required): Project directory path
-                - "issue_id" (optional): Beads issue ID for badge (e.g., "cic-123")
-                - "task_description" (optional): Task description for badge
-        layout: Layout type - "vertical", "horizontal", "quad", or "triple_vertical"
+        layout: Layout type - "auto" (default), "single", "vertical", "horizontal",
+            "quad", or "triple_vertical". When "auto", the layout is selected based
+            on project count:
+            - 1 project: "single" (full window, no splits)
+            - 2 projects: "vertical"
+            - 3 projects: "triple_vertical"
+            - 4+ projects: "quad"
         skip_permissions: If True, start Claude with --dangerously-skip-permissions
+        name_set: Name set for iconic worker names (e.g., "beatles", "marx_brothers").
+            If None, picks a random set. Available sets: beatles, marx_brothers, tmnt,
+            three_stooges, spice_girls, abbott_costello, breakfast_club, ocean_eleven.
+        custom_names: Override with custom names list. Takes precedence over name_set.
+        custom_prompt: If provided, sends this prompt to workers instead of the
+            standard pre-prompt (activates custom mode).
+        include_beads_instructions: For custom mode only - if True (default),
+            appends beads quick reference to your custom prompt.
+        use_worktrees: If True, create an isolated git worktree for each worker.
+            Workers will operate in their own working directory while sharing
+            the same repository history. Useful for parallel work that might
+            have conflicting file changes.
+        branch: Branch name to use for worktrees. If the branch doesn't exist,
+            it will be created from HEAD. If not specified, worktrees will
+            use detached HEAD mode.
 
     Returns:
         Dict with:
-            - sessions: Dict mapping pane names to session info (id, status, project_path)
-            - layout: The layout used
+            - sessions: Dict mapping pane names to session info (id, status, project_path,
+              worktree_path if use_worktrees=True)
+            - layout: The layout used (resolved from "auto" if applicable)
             - count: Number of sessions created
+            - name_set: The name set used (or "custom" if custom_names provided)
+            - mode: "standard" or "custom"
+            - use_worktrees: Whether worktrees were created
+            - coordinator_guidance: Instructions for the coordinator (standard mode only)
 
-    Example:
+    Example (standard mode):
         spawn_team(
             projects={
-                "top_left": {"path": "/path/to/frontend", "issue_id": "cic-123", "task_description": "Fix auth"},
-                "top_right": "/path/to/backend",  # simple string still works
-                "bottom_left": {"path": "/path/to/api", "task_description": "Add endpoint"},
-                "bottom_right": "/path/to/tests"
+                "top_left": "/path/to/frontend",
+                "top_right": "/path/to/backend",
             },
-            layout="quad"
+            layout="vertical",
+            name_set="beatles"
         )
+        # Returns coordinator_guidance with worker management instructions
+
+    Example (custom mode):
+        spawn_team(
+            projects={"main": "/path/to/project"},
+            layout="single",
+            custom_prompt="You are a code reviewer. Review all changed files.",
+            include_beads_instructions=False  # Skip beads for this workflow
+        )
+        # Workers receive your custom prompt, no coordinator_guidance returned
     """
     import iterm2
 
@@ -683,6 +458,18 @@ async def spawn_team(
 
     # Ensure we have a fresh connection (websocket can go stale)
     connection, _ = await ensure_connection(app_ctx)
+
+    # Auto-select layout based on project count
+    if layout == "auto":
+        count = len(projects)
+        if count == 1:
+            layout = "single"  # full window, no splits
+        elif count == 2:
+            layout = "vertical"
+        elif count == 3:
+            layout = "triple_vertical"
+        elif count >= 4:
+            layout = "quad"
 
     # Validate layout
     if layout not in LAYOUT_PANE_NAMES:
@@ -701,40 +488,18 @@ async def spawn_team(
             hint=f"Valid pane names for '{layout}' are: {', '.join(expected_panes)}",
         )
 
-    # Parse projects dict - each value can be a string (path) or dict with path/metadata
-    # Store parsed data: pane_name -> {path, issue_id, task_description}
-    parsed_projects: dict[str, dict] = {}
-    for pane_name, project_config in projects.items():
-        if isinstance(project_config, str):
-            # Simple string path
-            parsed_projects[pane_name] = {
-                "path": project_config,
-                "issue_id": None,
-                "task_description": None,
-            }
-        elif isinstance(project_config, dict):
-            # Dict with path and optional metadata
-            if "path" not in project_config:
-                return error_response(
-                    f"Missing 'path' key in project config for '{pane_name}'",
-                    hint="When using dict format, 'path' is required. Example: {'path': '/some/dir', 'issue_id': 'cic-123'}",
-                )
-            parsed_projects[pane_name] = {
-                "path": project_config["path"],
-                "issue_id": project_config.get("issue_id"),
-                "task_description": project_config.get("task_description"),
-            }
-        else:
-            return error_response(
-                f"Invalid project config type for '{pane_name}': {type(project_config).__name__}",
-                hint="Project config must be a string (path) or dict with 'path' key",
-            )
+    # Validate name_set if provided
+    if name_set is not None and name_set not in NAME_SETS:
+        return error_response(
+            f"Invalid name_set: {name_set}",
+            hint=f"Valid name sets are: {', '.join(NAME_SETS.keys())}",
+        )
 
     # Validate all project paths exist and detect worktrees
     resolved_projects = {}
     project_envs: dict[str, dict[str, str]] = {}
-    for pane_name, pdata in parsed_projects.items():
-        resolved = os.path.abspath(os.path.expanduser(pdata["path"]))
+    for pane_name, project_path in projects.items():
+        resolved = os.path.abspath(os.path.expanduser(project_path))
         if not os.path.isdir(resolved):
             return error_response(
                 f"Project path does not exist for '{pane_name}': {resolved}",
@@ -755,9 +520,57 @@ async def spawn_team(
         base_index = registry.count()
 
         # Create profile customizations for each pane
-        # Each pane gets a unique color from the sequence and a badge showing position
+        # Each pane gets a unique color from the sequence and a badge showing iconic name
         pane_customizations: dict[str, iterm2.LocalWriteOnlyProfile] = {}
         layout_pane_names = LAYOUT_PANE_NAMES[layout]
+
+        # Pick iconic names for sessions
+        project_count = len(projects)
+        if custom_names:
+            iconic_names = custom_names
+            used_name_set = "custom"
+        else:
+            iconic_names = pick_names(project_count, name_set)
+            # Determine which set was used (for return value)
+            if name_set:
+                used_name_set = name_set
+            else:
+                # pick_names chose randomly, we need to figure out which set
+                # For simplicity, just report as "random"
+                used_name_set = "random"
+
+        # Map pane names to iconic names (in layout order)
+        pane_to_iconic: dict[str, str] = {}
+        name_index = 0
+        for pane_name in layout_pane_names:
+            if pane_name in projects:
+                pane_to_iconic[pane_name] = iconic_names[name_index % len(iconic_names)]
+                name_index += 1
+
+        # Create worktrees if requested
+        # Track original project paths and worktree paths separately
+        original_projects = dict(resolved_projects)  # Preserve original paths
+        worktree_paths: dict[str, Path] = {}  # pane_name -> worktree Path
+
+        if use_worktrees:
+            for pane_name, project_path in list(resolved_projects.items()):
+                worker_name = pane_to_iconic[pane_name]
+                try:
+                    worktree_path = create_worktree(
+                        repo_path=Path(project_path),
+                        worktree_name=worker_name,
+                        branch=branch,
+                    )
+                    worktree_paths[pane_name] = worktree_path
+                    # Update resolved_projects so Claude starts in the worktree
+                    resolved_projects[pane_name] = str(worktree_path)
+                    logger.info(f"Created worktree for {worker_name} at {worktree_path}")
+                except WorktreeError as e:
+                    # Log but don't fail - worker can still use main repo
+                    logger.warning(
+                        f"Failed to create worktree for {worker_name}: {e}. "
+                        "Worker will use main repo."
+                    )
 
         for pane_index, pane_name in enumerate(layout_pane_names):
             if pane_name not in projects:
@@ -765,19 +578,11 @@ async def spawn_team(
 
             customization = iterm2.LocalWriteOnlyProfile()
 
-            # Get parsed metadata for this pane
-            pdata = parsed_projects[pane_name]
-            issue_id = pdata.get("issue_id")
-            task_description = pdata.get("task_description")
+            # Get the iconic name for this pane
+            iconic_name = pane_to_iconic[pane_name]
 
-            # Generate session name - prefer issue_id if available
-            if issue_id:
-                session_name = issue_id
-            else:
-                session_name = f"{layout}_{pane_name}"
-
-            # Set tab title
-            tab_title = format_session_title(session_name, task_description)
+            # Set tab title with iconic name
+            tab_title = format_session_title(iconic_name)
             customization.set_name(tab_title)
 
             # Set unique tab color for this pane
@@ -785,11 +590,8 @@ async def spawn_team(
             customization.set_tab_color(color)
             customization.set_use_tab_color(True)
 
-            # Set badge text using issue/task info if available, else pane position
-            badge_text = format_badge_text(issue_id, task_description)
-            if not badge_text:
-                badge_text = pane_name.replace("_", "-")
-            customization.set_badge_text(badge_text)
+            # Set badge text to show iconic name
+            customization.set_badge_text(iconic_name)
 
             pane_customizations[pane_name] = customization
 
@@ -807,18 +609,17 @@ async def spawn_team(
         # Register all sessions (this is quick, no I/O)
         managed_sessions = {}
         for pane_name, iterm_session in pane_sessions.items():
-            # Use issue_id as session name if available, else layout_pane format
-            pdata = parsed_projects[pane_name]
-            if pdata.get("issue_id"):
-                session_name = pdata["issue_id"]
-            else:
-                session_name = f"{layout}_{pane_name}"
-
+            iconic_name = pane_to_iconic[pane_name]
             managed = registry.add(
                 iterm_session=iterm_session,
-                project_path=resolved_projects[pane_name],
-                name=session_name,
+                # Use original project path (not worktree) for registry
+                # This preserves the main repo path for JSONL lookup and cleanup
+                project_path=original_projects[pane_name],
+                name=iconic_name,  # e.g., "Groucho", "John"
             )
+            # Store worktree path if one was created for this session
+            if pane_name in worktree_paths:
+                managed.worktree_path = worktree_paths[pane_name]
             managed_sessions[pane_name] = managed
 
         # Send marker messages to all sessions for JSONL correlation
@@ -830,6 +631,27 @@ async def spawn_team(
 
         # Wait for markers to be logged
         await asyncio.sleep(2)
+
+        # Determine mode and send appropriate prompts to workers
+        is_standard_mode = custom_prompt is None
+
+        for pane_name, managed in managed_sessions.items():
+            iconic_name = pane_to_iconic[pane_name]
+
+            if is_standard_mode:
+                # Standard mode: send worker pre-prompt with coordination workflow
+                worker_prompt = generate_worker_prompt(managed.session_id, iconic_name)
+            else:
+                # Custom mode: use the provided custom_prompt
+                worker_prompt = custom_prompt
+                if include_beads_instructions:
+                    # Append beads guidance from BEADS_HELP_TEXT
+                    worker_prompt += "\n\n---\n" + BEADS_HELP_TEXT
+
+            await send_prompt(pane_sessions[pane_name], worker_prompt, submit=True)
+
+        # Wait for prompts to be processed
+        await asyncio.sleep(1)
 
         # Discover Claude sessions by marker and update status
         result_sessions = {}
@@ -844,11 +666,23 @@ async def spawn_team(
             registry.update_status(managed.session_id, SessionStatus.READY)
             result_sessions[pane_name] = managed.to_dict()
 
-        return {
+        # Build return value based on mode
+        result = {
             "sessions": result_sessions,
             "layout": layout,
             "count": len(result_sessions),
+            "name_set": used_name_set,
+            "mode": "standard" if is_standard_mode else "custom",
+            "use_worktrees": use_worktrees,
         }
+
+        # Include coordinator guidance only in standard mode
+        if is_standard_mode:
+            result["coordinator_guidance"] = get_coordinator_guidance()
+        else:
+            result["coordinator_guidance"] = None
+
+        return result
 
     except ValueError as e:
         # Layout or pane name validation errors from the primitive
@@ -866,15 +700,18 @@ async def spawn_team(
 async def list_sessions(
     ctx: Context[ServerSession, AppContext],
     status_filter: str | None = None,
+    blocked_only: bool = False,
 ) -> list[dict]:
     """
     List all managed Claude Code sessions.
 
     Returns information about each session including its ID, name,
-    project path, and current status.
+    project path, and current status. Results are sorted with blocked
+    sessions first for coordinator visibility.
 
     Args:
         status_filter: Optional filter by status - "ready", "busy", "spawning", "closed"
+        blocked_only: If True, only return sessions that are currently blocked
 
     Returns:
         List of session info dicts
@@ -895,6 +732,13 @@ async def list_sessions(
             )]
     else:
         sessions = registry.list_all()
+
+    # Filter to only blocked sessions if requested
+    if blocked_only:
+        sessions = [s for s in sessions if s.is_blocked()]
+
+    # Sort with blocked sessions first, then by created_at
+    sessions = sorted(sessions, key=lambda s: (not s.is_blocked(), s.created_at))
 
     # Convert to dicts and add message count if JSONL is available
     results = []
@@ -928,7 +772,7 @@ async def send_message(
     optionally waits for Claude's response.
 
     Args:
-        session_id: ID of the target session (from spawn_session or list_sessions)
+        session_id: ID of the target session (from spawn_team or list_sessions)
         message: The prompt/message to send
         wait_for_response: If True, wait for Claude to finish responding
         timeout: Maximum seconds to wait for response (if wait_for_response=True)
@@ -1551,8 +1395,9 @@ async def get_session_status(
     """
     Get detailed status of a Claude Code session.
 
-    Returns comprehensive information including terminal screen content,
-    conversation statistics, and processing state.
+    Returns comprehensive information including conversation statistics
+    and processing state. Use conversation_stats.last_assistant_preview
+    to see what the worker last said.
 
     Args:
         session_id: ID of the target session
@@ -1572,18 +1417,6 @@ async def get_session_status(
         )
 
     result = session.to_dict()
-
-    # Try to read screen content
-    try:
-        screen_text = await read_screen_text(session.iterm_session)
-        # Get last few non-empty lines as preview
-        lines = [l for l in screen_text.split("\n") if l.strip()]
-        result["screen_preview"] = "\n".join(lines[-10:]) if lines else ""
-        result["is_responsive"] = True
-    except Exception as e:
-        result["screen_preview"] = None
-        result["is_responsive"] = False
-        result["screen_error"] = str(e)
 
     # Get conversation stats from JSONL
     state = session.get_conversation_state()
@@ -1612,6 +1445,131 @@ async def get_session_status(
         result["is_processing"] = None
 
     return result
+
+
+@mcp.tool()
+async def annotate_session(
+    ctx: Context[ServerSession, AppContext],
+    session_id: str,
+    annotation: str,
+) -> dict:
+    """
+    Add a coordinator annotation to a session.
+
+    Coordinators use this to track what task each worker is assigned to.
+    These annotations appear in list_sessions output.
+
+    Args:
+        session_id: The session to annotate
+        annotation: Note about what this worker is working on
+
+    Returns:
+        Confirmation that the annotation was saved
+    """
+    app_ctx = ctx.request_context.lifespan_context
+    registry = app_ctx.registry
+
+    session = registry.get(session_id)
+    if not session:
+        return error_response(
+            f"Session not found: {session_id}",
+            hint=HINTS["session_not_found"],
+        )
+
+    session.controller_annotation = annotation
+    session.update_activity()
+
+    return {
+        "success": True,
+        "session_id": session_id,
+        "annotation": annotation,
+        "message": "Annotation saved",
+    }
+
+
+@mcp.tool()
+async def flag_blocker(
+    ctx: Context[ServerSession, AppContext],
+    session_id: str,
+    reason: str,
+) -> dict:
+    """
+    Flag a session as blocked with a reason.
+
+    Workers should call this when they cannot complete their assigned task
+    due to missing information, unclear requirements, external dependencies,
+    or other blockers. The coordinator will see this and can address it.
+
+    Args:
+        session_id: The worker's session ID (provided in their pre-prompt)
+        reason: Clear description of what's blocking progress
+
+    Returns:
+        Confirmation that the blocker was recorded
+    """
+    app_ctx = ctx.request_context.lifespan_context
+    registry = app_ctx.registry
+
+    session = registry.get(session_id)
+    if not session:
+        return error_response(
+            f"Session not found: {session_id}",
+            hint=HINTS["session_not_found"],
+        )
+
+    session.set_blocker(reason)
+
+    return {
+        "success": True,
+        "session_id": session_id,
+        "blocker_reason": reason,
+        "message": "Blocker flagged. The coordinator has been notified.",
+    }
+
+
+@mcp.tool()
+async def clear_blocker(
+    ctx: Context[ServerSession, AppContext],
+    session_id: str,
+) -> dict:
+    """
+    Clear the blocker status from a session.
+
+    Coordinators call this after addressing a worker's blocker.
+    This signals to the worker that they can proceed.
+
+    Args:
+        session_id: The session ID to clear the blocker from
+
+    Returns:
+        Confirmation that the blocker was cleared
+    """
+    app_ctx = ctx.request_context.lifespan_context
+    registry = app_ctx.registry
+
+    session = registry.get(session_id)
+    if not session:
+        return error_response(
+            f"Session not found: {session_id}",
+            hint=HINTS["session_not_found"],
+        )
+
+    if not session.is_blocked():
+        return {
+            "success": True,
+            "session_id": session_id,
+            "message": "Session was not blocked",
+        }
+
+    previous_reason = session.blocker_reason
+    session.clear_blocker()
+
+    return {
+        "success": True,
+        "session_id": session_id,
+        "cleared_reason": previous_reason,
+        "message": "Blocker cleared. Worker can proceed.",
+    }
 
 
 @mcp.tool()
@@ -1924,6 +1882,19 @@ async def close_session(
         await send_prompt(session.iterm_session, "/exit", submit=True)
         await asyncio.sleep(1.0)
 
+        # Clean up worktree if exists
+        worktree_cleaned = False
+        if session.worktree_path:
+            try:
+                remove_worktree(
+                    repo_path=Path(session.project_path),
+                    worktree_name=session.worktree_path.name,
+                )
+                worktree_cleaned = True
+            except WorktreeError as e:
+                # Log but don't fail the close
+                logger.warning(f"Failed to clean up worktree for {session_id}: {e}")
+
         # Close the iTerm2 pane/window
         await close_pane(session.iterm_session, force=force)
 
@@ -1937,6 +1908,7 @@ async def close_session(
             "success": True,
             "session_id": session_id,
             "message": "Session closed, pane terminated, and removed from registry",
+            "worktree_cleaned": worktree_cleaned,
         }
 
     except Exception as e:
@@ -1948,6 +1920,7 @@ async def close_session(
             "success": True,
             "session_id": session_id,
             "warning": f"Session removed but cleanup may be incomplete: {e}",
+            "worktree_cleaned": False,
         }
 
 
