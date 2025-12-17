@@ -30,6 +30,74 @@ _profile_creation_failed: bool = False
 
 
 # =============================================================================
+# iTerm2 Advanced Settings
+# =============================================================================
+
+# Cache to track whether we've configured iTerm2 advanced settings this session.
+_advanced_settings_configured: bool = False
+
+
+def _configure_iterm2_advanced_settings() -> bool:
+    """
+    Configure iTerm2 advanced settings required for claude-team sessions.
+
+    Sets app-level preferences that cannot be configured via Dynamic Profiles.
+    Currently configures:
+    - PreventEscapeSequenceFromClearingHistory: Set to NO to allow control
+      sequences to clear scrollback without showing a warning dialog.
+
+    This uses macOS `defaults` command since these are NSUserDefaults settings,
+    not profile-level settings.
+
+    Returns:
+        True if settings were configured successfully, False otherwise
+    """
+    global _advanced_settings_configured
+
+    if _advanced_settings_configured:
+        return True
+
+    try:
+        import subprocess
+
+        # Allow control sequences to clear scrollback history without warning.
+        # This is an app-level advanced setting, not a profile setting.
+        # Value: NO = allow clearing (don't show warning), YES = prevent clearing
+        result = subprocess.run(
+            [
+                "defaults",
+                "write",
+                "com.googlecode.iterm2",
+                "PreventEscapeSequenceFromClearingHistory",
+                "-bool",
+                "NO",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        if result.returncode == 0:
+            logger.info(
+                "Configured iTerm2 to allow control sequences to clear scrollback"
+            )
+            _advanced_settings_configured = True
+            return True
+        else:
+            logger.warning(
+                f"Failed to configure iTerm2 advanced settings: {result.stderr}"
+            )
+            return False
+
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout configuring iTerm2 advanced settings")
+        return False
+    except Exception as e:
+        logger.warning(f"Error configuring iTerm2 advanced settings: {e}")
+        return False
+
+
+# =============================================================================
 # Constants
 # =============================================================================
 
@@ -380,10 +448,11 @@ async def ensure_profile_exists(connection: "iterm2.Connection") -> str:
     Ensure the claude-team profile exists, creating it if necessary.
 
     This is the main entry point for profile auto-creation. It:
-    1. Checks the cache to avoid redundant work
-    2. Checks if profile already exists in iTerm2
-    3. If not, creates a dynamic profile JSON file
-    4. Falls back gracefully if creation fails
+    1. Configures iTerm2 advanced settings (app-level preferences)
+    2. Checks the cache to avoid redundant work
+    3. Checks if profile already exists in iTerm2
+    4. If not, creates a dynamic profile JSON file
+    5. Falls back gracefully if creation fails
 
     The result is cached for the session lifetime to avoid repeated checks.
 
@@ -395,6 +464,10 @@ async def ensure_profile_exists(connection: "iterm2.Connection") -> str:
         and caller should use default profile with customizations)
     """
     global _profile_ensured, _profile_creation_failed
+
+    # Configure iTerm2 advanced settings (app-level, not profile-level).
+    # This is done before profile checks to ensure settings are always applied.
+    _configure_iterm2_advanced_settings()
 
     # Fast path: already ensured this session
     if _profile_ensured:
@@ -437,13 +510,14 @@ async def ensure_profile_exists(connection: "iterm2.Connection") -> str:
 
 def reset_profile_cache() -> None:
     """
-    Reset the profile cache.
+    Reset the profile cache and advanced settings cache.
 
     Useful for testing or if the profile needs to be re-checked.
     """
-    global _profile_ensured, _profile_creation_failed
+    global _profile_ensured, _profile_creation_failed, _advanced_settings_configured
     _profile_ensured = False
     _profile_creation_failed = False
+    _advanced_settings_configured = False
 
 
 # =============================================================================
