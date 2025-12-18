@@ -184,6 +184,7 @@ QUINTETS: dict[str, list[str]] = {
 
 # Larger ensembles for flexibility
 LARGER: dict[str, list[str]] = {
+    "monty_python": ["Chapman", "Cleese", "Gilliam", "Idle", "Jones", "Palin"],
     "friends": ["Rachel", "Monica", "Phoebe", "Ross", "Joey", "Chandler"],
     "ocean_eleven": [
         "Danny", "Rusty", "Linus", "Basher", "Yen",
