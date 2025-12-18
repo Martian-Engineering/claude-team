@@ -11,6 +11,7 @@ An MCP server that allows one Claude Code session to spawn and manage a team of 
 - **Parallelism:** Many development tasks can be logically parallelized, but managing that paralellism is difficult for humans with limited attention spans. Claude, meanwhile, is very effective at it. 
 - **Context management:** Offloading implementation to an agent gives the implementing agent a fresh context window (smarter), and keeps the manager's context free of implementation details.
 - **Background work:** Sometimes you want to have Claude Code go research something or answer a question without blocking the main thread of work.
+- **Visibility:** `claude-team` spawns real Claude Code sessions. You can watch them, interrupt and take control, or close them out.
 
 But, *why not just use Claude Code sub-agents*, you ask? They're opaque -- they go off and do things and you, the user, cannot effectively monitor their work, interject, or continue a conversation with them. Using a full Claude Code session obviates this problem.
 
@@ -22,8 +23,10 @@ I use the excellent [beads](https://github.com/steveyegge/beads?tab=readme-ov-fi
 
 1. Begin with planning — Claude Code's plan mode is effective
 2. Ask Claude to turn the plan into `beads` issues, usually an epic and subtasks with appropriate dependencies. [These instructions](./CLAUDE.md#plan-mode-workflow) are useful in your project's `CLAUDE.md`
-3. Use the `/spawn-workers` slash command to delegate parallelizable work to workers in independent worktrees.
+3. Use the [/spawn-workers](./commands/spawn-workers.md) slash command to delegate parallelizable work to workers in independent worktrees.
 4. Review, merge back to your working branch, or submit PRs
+
+Once you've spawned workers, *let them cook and keep planning new tasks!* Notice a bug? File it as an issue and spawn a worker if it can be tackled independently. Leverage your main Claude Code session as the place where you *coordinate* and *plan* work, and offload the implementation via `claude-team`.
 
 ## Features
 
