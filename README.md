@@ -2,6 +2,29 @@
 
 An MCP server that allows one Claude Code session to spawn and manage a team of other Claude Code sessions via iTerm2.
 
+## Introduction
+
+`claude-team` is an MCP server and a set of somewhat opinionated slash commands for allowing Claude Code to orchestrate a "team" of other Claude Code sessions. It uses the iTerm2 API to spawn new terminal sessions and run Claude Code within them, because iTerm2 is fairly ubiquitous and has a nice API (that and this author uses it heavily). 
+
+### Why?
+
+- **Parallelism:** Many development tasks can be logically parallelized, but managing that paralellism is difficult for humans with limited attention spans. Claude, meanwhile, is very effective at it. 
+- **Context management:** Offloading implementation to an agent gives the implementing agent a fresh context window (smarter), and keeps the manager's context free of implementation details.
+- **Background work:** Sometimes you want to have Claude Code go research something or answer a question without blocking the main thread of work.
+
+But, *why not just use Claude Code sub-agents*, you ask? They're opaque -- they go off and do things and you, the user, cannot effectively monitor their work, interject, or continue a conversation with them. Using a full Claude Code session obviates this problem.
+
+### Workflow
+
+A generally accepted best practice in agentic development is to first plan work to be done, and then transition to implementation after a back-and-forth that produces a plan.
+
+I use the excellent [beads](https://github.com/steveyegge/beads?tab=readme-ov-file) tool throughout my planning process, and it pairs extraordinarily well with `claude-team`. Here's how:
+
+1. Begin with planning — Claude Code's plan mode is effective
+2. Ask Claude to turn the plan into `beads` issues, usually an epic and subtasks with appropriate dependencies. [These instructions](./CLAUDE.md#plan-mode-workflow) are useful in your project's `CLAUDE.md`
+3. Use the `/spawn-workers` slash command to delegate parallelizable work to workers in independent worktrees.
+4. Review, merge back to your working branch, or submit PRs
+
 ## Features
 
 - **Spawn Sessions**: Create new Claude Code sessions in iTerm2 windows or split panes
