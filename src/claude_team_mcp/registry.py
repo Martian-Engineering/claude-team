@@ -25,34 +25,6 @@ class SessionStatus(str, Enum):
 
 
 @dataclass
-class TaskInfo:
-    """
-    Information about a delegated task.
-
-    Tracks the task that was sent to a session, including the baseline
-    state when the task was delegated.
-    """
-
-    task_id: str  # Unique task identifier
-    description: str  # Task description/prompt sent
-    started_at: datetime = field(default_factory=datetime.now)
-    baseline_message_uuid: Optional[str] = None  # Last message UUID before task
-    beads_issue_id: Optional[str] = None  # Optional linked beads issue
-
-    def to_dict(self) -> dict:
-        """Convert to dictionary for MCP tool responses."""
-        return {
-            "task_id": self.task_id,
-            "description": self.description[:200] + "..."
-            if len(self.description) > 200
-            else self.description,
-            "started_at": self.started_at.isoformat(),
-            "baseline_message_uuid": self.baseline_message_uuid,
-            "beads_issue_id": self.beads_issue_id,
-        }
-
-
-@dataclass
 class ManagedSession:
     """
     Represents a spawned Claude Code session.
@@ -69,12 +41,6 @@ class ManagedSession:
     status: SessionStatus = SessionStatus.SPAWNING
     created_at: datetime = field(default_factory=datetime.now)
     last_activity: datetime = field(default_factory=datetime.now)
-    current_task: Optional[TaskInfo] = None  # Currently delegated task
-    task_history: list[TaskInfo] = field(default_factory=list)  # Completed tasks
-
-    # Blocker tracking for coordinator oversight
-    blocker_reason: Optional[str] = None  # Why this session is blocked
-    blocker_at: Optional[datetime] = None  # When blocker was set
 
     # Coordinator annotations and worktree tracking
     controller_annotation: Optional[str] = None  # Notes from coordinator about assignment
@@ -82,7 +48,7 @@ class ManagedSession:
 
     def to_dict(self) -> dict:
         """Convert to dictionary for MCP tool responses."""
-        result = {
+        return {
             "session_id": self.session_id,
             "name": self.name or self.session_id,
             "project_path": self.project_path,
@@ -90,16 +56,9 @@ class ManagedSession:
             "status": self.status.value,
             "created_at": self.created_at.isoformat(),
             "last_activity": self.last_activity.isoformat(),
-            "has_active_task": self.current_task is not None,
-            "is_blocked": self.is_blocked(),
-            "blocker_reason": self.blocker_reason,
-            "blocker_at": self.blocker_at.isoformat() if self.blocker_at else None,
             "controller_annotation": self.controller_annotation,
             "worktree_path": str(self.worktree_path) if self.worktree_path else None,
         }
-        if self.current_task:
-            result["current_task"] = self.current_task.to_dict()
-        return result
 
     def update_activity(self) -> None:
         """Update the last_activity timestamp."""
@@ -175,89 +134,6 @@ class ManagedSession:
         if not jsonl_path or not jsonl_path.exists():
             return None
         return parse_session(jsonl_path)
-
-    def start_task(
-        self,
-        task_id: str,
-        description: str,
-        beads_issue_id: Optional[str] = None,
-    ) -> TaskInfo:
-        """
-        Start tracking a new delegated task.
-
-        Captures the baseline message UUID for completion detection.
-
-        Args:
-            task_id: Unique identifier for this task
-            description: Task description/prompt
-            beads_issue_id: Optional linked beads issue
-
-        Returns:
-            The created TaskInfo
-        """
-        # Get baseline message UUID
-        baseline_uuid = None
-        state = self.get_conversation_state()
-        if state and state.last_assistant_message:
-            baseline_uuid = state.last_assistant_message.uuid
-
-        # Create task info
-        task = TaskInfo(
-            task_id=task_id,
-            description=description,
-            baseline_message_uuid=baseline_uuid,
-            beads_issue_id=beads_issue_id,
-        )
-
-        # Archive current task if exists
-        if self.current_task:
-            self.task_history.append(self.current_task)
-
-        self.current_task = task
-        self.update_activity()
-        return task
-
-    def complete_task(self) -> Optional[TaskInfo]:
-        """
-        Mark current task as complete and archive it.
-
-        Returns:
-            The completed TaskInfo, or None if no active task
-        """
-        if not self.current_task:
-            return None
-
-        completed = self.current_task
-        self.task_history.append(completed)
-        self.current_task = None
-        self.update_activity()
-        return completed
-
-    def set_blocker(self, reason: str) -> None:
-        """
-        Mark this session as blocked with a reason.
-
-        Args:
-            reason: Description of why this session is blocked
-        """
-        self.blocker_reason = reason
-        self.blocker_at = datetime.now()
-        self.update_activity()
-
-    def clear_blocker(self) -> None:
-        """Clear the blocker status from this session."""
-        self.blocker_reason = None
-        self.blocker_at = None
-        self.update_activity()
-
-    def is_blocked(self) -> bool:
-        """
-        Check if this session is currently blocked.
-
-        Returns:
-            True if blocker_reason is set, False otherwise
-        """
-        return self.blocker_reason is not None
 
 
 class SessionRegistry:
@@ -354,15 +230,6 @@ class SessionRegistry:
             List of matching ManagedSession objects
         """
         return [s for s in self._sessions.values() if s.status == status]
-
-    def list_blocked(self) -> list[ManagedSession]:
-        """
-        Get all sessions that have a blocker set.
-
-        Returns:
-            List of ManagedSession objects with blockers
-        """
-        return [s for s in self._sessions.values() if s.is_blocked()]
 
     def remove(self, session_id: str) -> Optional[ManagedSession]:
         """

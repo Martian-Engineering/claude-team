@@ -26,15 +26,10 @@ class TestGenerateWorkerPrompt:
         prompt = generate_worker_prompt("worker-1", "Ringo")
         assert "Ringo" in prompt
 
-    def test_includes_evaluate_first_rule(self):
-        """Prompt should contain the 'evaluate first' instruction."""
+    def test_includes_do_work_fully_rule(self):
+        """Prompt should contain the 'do work fully' instruction."""
         prompt = generate_worker_prompt("test-session", "George")
-        assert "Evaluate first" in prompt
-
-    def test_includes_complete_or_flag_rule(self):
-        """Prompt should contain the 'complete or flag' instruction."""
-        prompt = generate_worker_prompt("test-session", "TestWorker")
-        assert "Complete or flag" in prompt
+        assert "Do the work fully" in prompt
 
     def test_includes_beads_discipline_rule(self):
         """Prompt should contain beads discipline instructions."""
@@ -42,12 +37,6 @@ class TestGenerateWorkerPrompt:
         assert "Beads discipline" in prompt
         assert "bd update" in prompt
         assert "bd comment" in prompt
-
-    def test_includes_blocker_marker_format(self):
-        """Prompt should explain the <!BLOCKED:reason!> marker format."""
-        prompt = generate_worker_prompt("my-session-id", "Worker")
-        assert "<!BLOCKED:" in prompt
-        assert "!>" in prompt
 
     def test_includes_never_close_beads_instruction(self):
         """Prompt should instruct workers not to close beads."""
@@ -99,10 +88,10 @@ class TestGetCoordinatorGuidance:
         guidance = get_coordinator_guidance()
         assert "list_sessions" in guidance
 
-    def test_mentions_check_blockers(self):
-        """Guidance should mention check_blockers command."""
+    def test_mentions_is_idle(self):
+        """Guidance should mention is_idle command."""
         guidance = get_coordinator_guidance()
-        assert "check_blockers" in guidance
+        assert "is_idle" in guidance
 
     def test_mentions_annotate_session(self):
         """Guidance should mention annotate_session command."""
@@ -114,10 +103,10 @@ class TestGetCoordinatorGuidance:
         guidance = get_coordinator_guidance()
         assert "get_conversation_history" in guidance
 
-    def test_mentions_monitoring_blockers(self):
-        """Guidance should explain blocker monitoring."""
+    def test_mentions_idle_detection(self):
+        """Guidance should explain idle detection."""
         guidance = get_coordinator_guidance()
-        assert "blocker" in guidance.lower()
+        assert "idle" in guidance.lower()
 
     def test_mentions_reviewing_beads(self):
         """Guidance should mention reviewing and closing beads."""
