@@ -37,11 +37,13 @@ from .iterm_utils import (
 )
 from .names import pick_names_for_count
 from .profile import PROFILE_NAME, get_or_create_profile
-from .registry import SessionRegistry, SessionStatus, TaskInfo
-from .task_completion import (
-    TaskStatus,
-    detect_completion,
-    wait_for_completion as wait_for_completion_impl,
+from .registry import SessionRegistry, SessionStatus
+from .idle_detection import (
+    is_idle as check_is_idle,
+    wait_for_idle as wait_for_idle_impl,
+    wait_for_all_idle as wait_for_all_idle_impl,
+    wait_for_any_idle as wait_for_any_idle_impl,
+    SessionInfo,
 )
 from .worker_prompt import generate_worker_prompt, get_coordinator_guidance
 from .worktree import WorktreeError, create_worktree, remove_worktree
@@ -113,10 +115,6 @@ HINTS = {
     "session_closed": (
         "This session has been closed. Use spawn_team to create a new one, "
         "or list_sessions to find other active sessions"
-    ),
-    "no_active_task": (
-        "No task is being tracked for this session. Use send_message with "
-        "track_task=True to start tracking a task for completion detection"
     ),
     "project_path_detection_failed": (
         "Could not auto-detect project path from terminal. Provide project_path "
@@ -757,93 +755,12 @@ async def list_sessions(
 
 
 @mcp.tool()
-async def check_blockers(
-    ctx: Context[ServerSession, AppContext],
-    session_ids: list[str] | None = None,
-) -> dict:
-    """
-    Scan worker conversations for blocker markers.
-
-    Workers flag blockers by including `<!BLOCKED:reason!>` in their responses.
-    This tool scans recent conversation history for these markers.
-
-    Args:
-        session_ids: Optional list of session IDs to check. If not provided,
-            checks all active sessions.
-
-    Returns:
-        Dict with:
-            - blockers: List of detected blockers, each containing:
-                - session_id: The session ID
-                - name: The worker's name
-                - reason: The blocker reason from the marker
-                - message_uuid: UUID of the message containing the blocker
-            - checked_count: Number of sessions scanned
-            - blocked_count: Number of sessions with blockers
-    """
-    import re
-
-    app_ctx = ctx.request_context.lifespan_context
-    registry = app_ctx.registry
-
-    # Get sessions to check
-    if session_ids:
-        sessions = [registry.get(sid) for sid in session_ids]
-        sessions = [s for s in sessions if s is not None]
-    else:
-        sessions = registry.list_all()
-
-    # Pattern to match <!BLOCKED:reason!>
-    blocker_pattern = re.compile(r"<!BLOCKED:(.+?)!>", re.DOTALL)
-
-    # Example text from the pre-prompt to ignore
-    example_reasons = {
-        "reason here",
-        "Need API credentials to test authentication flow",
-    }
-
-    blockers = []
-    for session in sessions:
-        state = session.get_conversation_state()
-        if not state:
-            continue
-
-        # Check recent messages (last 20)
-        recent_messages = state.messages[-20:] if state.messages else []
-        for msg in recent_messages:
-            if msg.role != "assistant":
-                continue
-            # Message.content is already extracted text
-            matches = blocker_pattern.findall(msg.content)
-            for reason in matches:
-                reason_stripped = reason.strip()
-                # Skip examples from the pre-prompt
-                if reason_stripped in example_reasons:
-                    continue
-                blockers.append({
-                    "session_id": session.session_id,
-                    "name": session.name,
-                    "reason": reason_stripped,
-                    "message_uuid": msg.uuid,
-                })
-
-    return {
-        "blockers": blockers,
-        "checked_count": len(sessions),
-        "blocked_count": len(set(b["session_id"] for b in blockers)),
-    }
-
-
-@mcp.tool()
 async def send_message(
     ctx: Context[ServerSession, AppContext],
     session_id: str,
     message: str,
     wait_for_response: bool = False,
     timeout: float = 120.0,
-    track_task: bool = False,
-    task_id: str | None = None,
-    beads_issue_id: str | None = None,
 ) -> dict:
     """
     Send a message to a managed Claude Code session.
@@ -856,9 +773,6 @@ async def send_message(
         message: The prompt/message to send
         wait_for_response: If True, wait for Claude to finish responding
         timeout: Maximum seconds to wait for response (if wait_for_response=True)
-        track_task: If True, track this as a delegated task for completion detection
-        task_id: Optional custom task ID (auto-generated if track_task=True but not provided)
-        beads_issue_id: Optional beads issue ID to link for completion tracking
 
     Returns:
         Dict with success status and optional response content
@@ -895,19 +809,6 @@ async def send_message(
             if state and state.last_assistant_message:
                 baseline_uuid = state.last_assistant_message.uuid
 
-        # Track task if requested
-        task_info = None
-        if track_task:
-            # Generate task ID if not provided
-            import uuid as uuid_module
-
-            actual_task_id = task_id or f"task-{uuid_module.uuid4().hex[:8]}"
-            task_info = session.start_task(
-                task_id=actual_task_id,
-                description=message,
-                beads_issue_id=beads_issue_id,
-            )
-
         # Append hint about bd_help tool to help workers understand beads
         message_with_hint = message + WORKER_MESSAGE_HINT
 
@@ -919,11 +820,6 @@ async def send_message(
             "session_id": session_id,
             "message_sent": message[:100] + "..." if len(message) > 100 else message,
         }
-
-        # Include task info if tracking
-        if task_info:
-            result["task_id"] = task_info.task_id
-            result["task_tracking"] = True
 
         # Optionally wait for response
         if wait_for_response:
@@ -1922,31 +1818,27 @@ async def close_session(
 
 
 # =============================================================================
-# Task Completion Detection Tools
+# Idle Detection Tools
 # =============================================================================
 
 
 @mcp.tool()
-async def get_task_status(
+async def is_idle(
     ctx: Context[ServerSession, AppContext],
     session_id: str,
 ) -> dict:
     """
-    Get the completion status of a delegated task.
+    Check if a worker session is idle (finished responding).
 
-    Uses Stop hook detection to determine if a task is complete. When Claude
-    finishes responding, the Stop hook fires and logs a marker to the JSONL.
-    This is authoritative — either done or not done.
+    Uses Stop hook detection: when Claude finishes responding, the Stop hook
+    fires and logs a marker. If the marker exists with no subsequent messages,
+    the worker is idle.
 
     Args:
         session_id: ID of the session to check
 
     Returns:
-        Dict with:
-            - status: "in_progress", "completed", or "unknown"
-            - detection_method: "stop_hook"
-            - details: Additional information about the detection
-            - has_active_task: Whether a task is currently being tracked
+        Dict with {idle: bool, session_id: str}
     """
     app_ctx = ctx.request_context.lifespan_context
     registry = app_ctx.registry
@@ -1959,71 +1851,48 @@ async def get_task_status(
             hint=HINTS["session_not_found"],
         )
 
-    # Check if there's an active task
-    if not session.current_task:
-        return error_response(
-            "No active task being tracked",
-            hint=HINTS["no_active_task"],
-            session_id=session_id,
-            has_active_task=False,
-            status=TaskStatus.UNKNOWN.value,
-        )
-
     # Get JSONL path
     jsonl_path = session.get_jsonl_path()
-    if not jsonl_path:
-        return error_response(
-            "No JSONL session file found",
-            hint=HINTS["no_jsonl_file"],
-            session_id=session_id,
-            status=TaskStatus.UNKNOWN.value,
-        )
+    if not jsonl_path or not jsonl_path.exists():
+        return {
+            "idle": False,
+            "session_id": session_id,
+            "error": "No JSONL session file found",
+        }
 
-    # Run detection
-    result = detect_completion(jsonl_path, session_id)
+    # Check if idle
+    idle = check_is_idle(jsonl_path, session_id)
 
-    # If completed, archive the task
-    if result.status == TaskStatus.COMPLETED:
-        session.complete_task()
+    # Update session status if idle
+    if idle:
         registry.update_status(session_id, SessionStatus.READY)
 
     return {
+        "idle": idle,
         "session_id": session_id,
-        "has_active_task": session.current_task is not None,
-        "task_id": session.current_task.task_id if session.current_task else None,
-        "task_description": (
-            session.current_task.description[:100] + "..."
-            if session.current_task and len(session.current_task.description) > 100
-            else (session.current_task.description if session.current_task else None)
-        ),
-        **result.to_dict(),
     }
 
 
 @mcp.tool()
-async def wait_for_completion(
+async def wait_for_idle(
     ctx: Context[ServerSession, AppContext],
     session_id: str,
-    timeout: float = 300.0,
+    timeout: float = 600.0,
     poll_interval: float = 2.0,
 ) -> dict:
     """
-    Wait for a delegated task to complete.
+    Wait for a worker session to become idle.
 
     Polls until the Stop hook fires or timeout is reached. When Claude finishes
     responding, the Stop hook fires immediately — no guessing, no heuristics.
 
     Args:
         session_id: ID of the session to wait on
-        timeout: Maximum seconds to wait (default 5 minutes)
+        timeout: Maximum seconds to wait (default 10 minutes)
         poll_interval: Seconds between checks (default 2)
 
     Returns:
-        Dict with:
-            - status: "completed" or "in_progress" (if timeout)
-            - detection_method: "stop_hook"
-            - details: Additional information
-            - waited_seconds: How long we actually waited
+        Dict with {idle: bool, session_id: str, waited_seconds: float, timed_out: bool}
     """
     app_ctx = ctx.request_context.lifespan_context
     registry = app_ctx.registry
@@ -2034,16 +1903,6 @@ async def wait_for_completion(
         return error_response(
             f"Session not found: {session_id}",
             hint=HINTS["session_not_found"],
-        )
-
-    # Check if there's an active task
-    if not session.current_task:
-        return error_response(
-            "No active task being tracked",
-            hint=HINTS["no_active_task"],
-            session_id=session_id,
-            has_active_task=False,
-            status=TaskStatus.UNKNOWN.value,
         )
 
     # Get JSONL path
@@ -2055,74 +1914,130 @@ async def wait_for_completion(
             session_id=session_id,
         )
 
-    # Wait for completion
-    result = await wait_for_completion_impl(
+    # Wait for idle
+    result = await wait_for_idle_impl(
         jsonl_path=jsonl_path,
         session_id=session_id,
         timeout=timeout,
         poll_interval=poll_interval,
     )
 
-    # If completed, archive the task
-    if result.status == TaskStatus.COMPLETED:
-        session.complete_task()
+    # Update session status if idle
+    if result["idle"]:
         registry.update_status(session_id, SessionStatus.READY)
 
-    return {
-        "session_id": session_id,
-        "task_id": session.current_task.task_id if session.current_task else None,
-        **result.to_dict(),
-    }
+    return result
 
 
 @mcp.tool()
-async def cancel_task(
+async def wait_for_team_idle(
     ctx: Context[ServerSession, AppContext],
-    session_id: str,
+    session_ids: list[str],
+    mode: str = "all",
+    timeout: float = 600.0,
+    poll_interval: float = 2.0,
 ) -> dict:
     """
-    Cancel tracking of the current task without waiting for completion.
+    Wait for multiple worker sessions to become idle.
 
-    This does not stop the Claude session from working - it only stops
-    tracking the task for completion detection. Useful if you want to
-    abandon waiting and start a new task.
+    Supports two modes:
+    - "all": Wait until ALL workers are idle (default, for fan-out/fan-in)
+    - "any": Return as soon as ANY worker becomes idle (for pipelines)
 
     Args:
-        session_id: ID of the session
+        session_ids: List of session IDs to wait on
+        mode: "all" or "any" - default "all"
+        timeout: Maximum seconds to wait (default 10 minutes)
+        poll_interval: Seconds between checks (default 2)
 
     Returns:
-        Dict with the cancelled task info
+        Dict with:
+            - idle_session_ids: List of sessions that are idle
+            - all_idle: Whether all sessions are idle
+            - waiting_on: Sessions still working (if timed out)
+            - mode: The mode used
+            - waited_seconds: How long we waited
+            - timed_out: Whether we hit the timeout
     """
     app_ctx = ctx.request_context.lifespan_context
     registry = app_ctx.registry
 
-    # Look up session
-    session = registry.get(session_id)
-    if not session:
+    # Validate mode
+    if mode not in ("all", "any"):
         return error_response(
-            f"Session not found: {session_id}",
+            f"Invalid mode: {mode}. Must be 'all' or 'any'",
+        )
+
+    # Look up sessions and build SessionInfo list
+    session_infos = []
+    missing_sessions = []
+    missing_jsonl = []
+
+    for session_id in session_ids:
+        session = registry.get(session_id)
+        if not session:
+            missing_sessions.append(session_id)
+            continue
+
+        jsonl_path = session.get_jsonl_path()
+        if not jsonl_path:
+            missing_jsonl.append(session_id)
+            continue
+
+        session_infos.append(SessionInfo(
+            jsonl_path=jsonl_path,
+            session_id=session_id,
+        ))
+
+    # Report any missing sessions/files
+    if missing_sessions:
+        return error_response(
+            f"Sessions not found: {', '.join(missing_sessions)}",
             hint=HINTS["session_not_found"],
         )
 
-    if not session.current_task:
+    if missing_jsonl:
+        return error_response(
+            f"No JSONL files for: {', '.join(missing_jsonl)}",
+            hint=HINTS["no_jsonl_file"],
+        )
+
+    # Wait based on mode
+    if mode == "any":
+        result = await wait_for_any_idle_impl(
+            sessions=session_infos,
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
+        # Convert to common format
         return {
-            "session_id": session_id,
-            "message": "No active task to cancel",
+            "idle_session_ids": [result["idle_session_id"]] if result["idle_session_id"] else [],
+            "all_idle": False,  # Can't be all idle in "any" mode
+            "waiting_on": [s for s in session_ids if s != result.get("idle_session_id")],
+            "mode": mode,
+            "waited_seconds": result["waited_seconds"],
+            "timed_out": result["timed_out"],
         }
+    else:
+        # mode == "all"
+        result = await wait_for_all_idle_impl(
+            sessions=session_infos,
+            timeout=timeout,
+            poll_interval=poll_interval,
+        )
 
-    # Archive the task
-    cancelled = session.complete_task()
+        # Update statuses for idle sessions
+        for session_id in result["idle_session_ids"]:
+            registry.update_status(session_id, SessionStatus.READY)
 
-    return {
-        "session_id": session_id,
-        "cancelled": True,
-        "task_id": cancelled.task_id if cancelled else None,
-        "task_description": (
-            cancelled.description[:100] + "..."
-            if cancelled and len(cancelled.description) > 100
-            else (cancelled.description if cancelled else None)
-        ),
-    }
+        return {
+            "idle_session_ids": result["idle_session_ids"],
+            "all_idle": result["all_idle"],
+            "waiting_on": result["waiting_on"],
+            "mode": mode,
+            "waited_seconds": result["waited_seconds"],
+            "timed_out": result["timed_out"],
+        }
 
 
 # =============================================================================
