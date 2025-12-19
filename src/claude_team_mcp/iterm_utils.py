@@ -391,6 +391,62 @@ async def wait_for_shell_ready(
 
 
 # =============================================================================
+# Claude Readiness Detection
+# =============================================================================
+
+# Patterns that indicate Claude Code has started and is ready for input.
+# These appear in Claude's startup banner (the ASCII robot art).
+CLAUDE_READY_PATTERNS = [
+    "Claude Code v",   # Version line in banner
+    "▐▛███▜▌",         # Top of robot head
+    "▝▜█████▛▘",       # Middle of robot
+]
+
+
+async def wait_for_claude_ready(
+    session: "iterm2.Session",
+    timeout_seconds: float = 30.0,
+    poll_interval: float = 0.5,
+) -> bool:
+    """
+    Wait for Claude Code to start and display its banner.
+
+    Polls the screen content looking for Claude's startup banner (the ASCII
+    robot art and version text). This ensures Claude is actually running
+    before we try to send it messages.
+
+    Args:
+        session: iTerm2 session to monitor
+        timeout_seconds: Maximum time to wait for Claude to start
+        poll_interval: Time between screen content checks
+
+    Returns:
+        True if Claude started successfully, False if timeout was reached
+    """
+    import asyncio
+    import time
+
+    start_time = time.monotonic()
+
+    while (time.monotonic() - start_time) < timeout_seconds:
+        try:
+            content = await read_screen_text(session)
+
+            # Check for any of the Claude banner patterns
+            for pattern in CLAUDE_READY_PATTERNS:
+                if pattern in content:
+                    return True
+
+        except Exception:
+            # Screen read failed, retry
+            pass
+
+        await asyncio.sleep(poll_interval)
+
+    return False
+
+
+# =============================================================================
 # Claude Session Control
 # =============================================================================
 
@@ -427,31 +483,33 @@ async def start_claude_in_session(
     session: "iterm2.Session",
     project_path: str,
     resume_session: Optional[str] = None,
-    wait_seconds: float = 3.0,
     dangerously_skip_permissions: bool = False,
     env: Optional[dict[str, str]] = None,
     shell_ready_timeout: float = 10.0,
+    claude_ready_timeout: float = 30.0,
     stop_hook_marker_id: Optional[str] = None,
 ) -> None:
     """
     Start Claude Code in an existing iTerm2 session.
 
     Changes to the project directory and launches Claude Code. Waits for shell
-    readiness before sending commands to prevent garbled input.
+    readiness before sending commands, then waits for Claude's startup banner
+    to appear before returning.
 
     Args:
         session: iTerm2 session to use
         project_path: Directory to run Claude in
         resume_session: Optional session ID to resume
-        wait_seconds: Time to wait for Claude to initialize after starting
         dangerously_skip_permissions: If True, start with --dangerously-skip-permissions
         env: Optional dict of environment variables to set before running claude
         shell_ready_timeout: Max seconds to wait for shell prompt before each command
+        claude_ready_timeout: Max seconds to wait for Claude to start and show banner
         stop_hook_marker_id: If provided, inject a Stop hook that logs this marker
             to the JSONL for completion detection
-    """
-    import asyncio
 
+    Raises:
+        RuntimeError: If Claude fails to start within the timeout
+    """
     # Wait for shell to be ready before sending cd command
     await wait_for_shell_ready(session, timeout_seconds=shell_ready_timeout)
 
@@ -478,8 +536,12 @@ async def start_claude_in_session(
 
     await send_prompt(session, cmd)
 
-    # Wait for Claude to initialize
-    await asyncio.sleep(wait_seconds)
+    # Wait for Claude to actually start (detect banner, not blind sleep)
+    if not await wait_for_claude_ready(session, timeout_seconds=claude_ready_timeout):
+        raise RuntimeError(
+            f"Claude failed to start in {project_path} within {claude_ready_timeout}s. "
+            "Check that 'claude' command is available and authentication is configured."
+        )
 
 
 # =============================================================================
