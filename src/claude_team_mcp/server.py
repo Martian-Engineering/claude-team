@@ -112,10 +112,6 @@ HINTS = {
         "Wait a few seconds and try again, or check that Claude Code started "
         "successfully in the terminal"
     ),
-    "session_closed": (
-        "This session has been closed. Use spawn_team to create a new one, "
-        "or list_sessions to find other active sessions"
-    ),
     "project_path_detection_failed": (
         "Could not auto-detect project path from terminal. Provide project_path "
         "explicitly when calling import_session"
@@ -642,12 +638,10 @@ async def spawn_team(
             if claude_session_id:
                 managed.claude_session_id = claude_session_id
             else:
-                # Fallback to timestamp-based discovery
                 logger.warning(
                     f"Marker polling timed out for {managed.session_id}, "
-                    "falling back to timestamp-based discovery"
+                    "JSONL correlation unavailable"
                 )
-                managed.discover_claude_session()
 
         # Determine mode and send appropriate prompts to workers
         is_standard_mode = custom_prompt is None
@@ -795,13 +789,6 @@ async def send_message(
             hint=HINTS["session_not_found"],
         )
 
-    # Check session is ready
-    if session.status == SessionStatus.CLOSED:
-        return error_response(
-            f"Session is closed: {session_id}",
-            hint=HINTS["session_closed"],
-        )
-
     try:
         # Update status to busy
         registry.update_status(session_id, SessionStatus.BUSY)
@@ -899,15 +886,12 @@ async def broadcast_message(
     # (fail fast if any session is invalid)
     # Uses resolve() to accept internal ID, terminal ID, or name
     missing_sessions = []
-    closed_sessions = []
     valid_sessions = []
 
     for sid in session_ids:
         session = registry.resolve(sid)
         if not session:
             missing_sessions.append(sid)
-        elif session.status == SessionStatus.CLOSED:
-            closed_sessions.append(sid)
         else:
             valid_sessions.append((sid, session))
 
@@ -918,13 +902,6 @@ async def broadcast_message(
         results[sid] = error_response(
             f"Session not found: {sid}",
             hint=HINTS["session_not_found"],
-            success=False,
-        )
-
-    for sid in closed_sessions:
-        results[sid] = error_response(
-            f"Session is closed: {sid}",
-            hint=HINTS["session_closed"],
             success=False,
         )
 
@@ -1446,7 +1423,7 @@ async def annotate_session(
             hint=HINTS["session_not_found"],
         )
 
-    session.controller_annotation = annotation
+    session.coordinator_annotation = annotation
     session.update_activity()
 
     return {
@@ -1785,9 +1762,6 @@ async def close_session(
         # Close the iTerm2 pane/window
         await close_pane(session.iterm_session, force=force)
 
-        # Update status
-        registry.update_status(session_id, SessionStatus.CLOSED)
-
         # Remove from registry
         registry.remove(session_id)
 
@@ -1801,7 +1775,6 @@ async def close_session(
     except Exception as e:
         logger.error(f"Failed to close session: {e}")
         # Still try to remove from registry
-        registry.update_status(session_id, SessionStatus.CLOSED)
         registry.remove(session_id)
         return {
             "success": True,
