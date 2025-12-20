@@ -247,16 +247,6 @@ def get_name_set(name: str) -> list[str]:
     return NAME_SETS[name]
 
 
-def get_random_set() -> tuple[str, list[str]]:
-    """Pick a random name set.
-
-    Returns:
-        Tuple of (set_name, list of names)
-    """
-    set_name = random.choice(list(NAME_SETS.keys()))
-    return set_name, NAME_SETS[set_name]
-
-
 def pick_names_for_count(count: int) -> tuple[str, list[str]]:
     """Pick a name set that matches the requested count.
 
@@ -274,12 +264,9 @@ def pick_names_for_count(count: int) -> tuple[str, list[str]]:
 
     if count <= 5:
         # Pick a random set of exactly this size
-        size_sets = SETS_BY_SIZE.get(count)
-        if size_sets:
-            set_name = random.choice(list(size_sets.keys()))
-            return (set_name, list(size_sets[set_name]))
-        # Fallback if somehow we don't have sets of this size
-        return get_random_set()
+        size_sets = SETS_BY_SIZE[count]
+        set_name = random.choice(list(size_sets.keys()))
+        return (set_name, list(size_sets[set_name]))
 
     # For count > 5, combine sets
     names: list[str] = []
