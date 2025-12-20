@@ -12,7 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from .session_state import find_active_session, get_project_dir, parse_session
+from .session_state import get_project_dir, parse_session
 
 
 @dataclass(frozen=True)
@@ -56,7 +56,6 @@ class SessionStatus(str, Enum):
     SPAWNING = "spawning"  # Claude is starting up
     READY = "ready"  # Claude is idle, waiting for input
     BUSY = "busy"  # Claude is processing/responding
-    CLOSED = "closed"  # Session has been terminated
 
 
 @dataclass
@@ -78,7 +77,7 @@ class ManagedSession:
     last_activity: datetime = field(default_factory=datetime.now)
 
     # Coordinator annotations and worktree tracking
-    controller_annotation: Optional[str] = None  # Notes from coordinator about assignment
+    coordinator_annotation: Optional[str] = None  # Notes from coordinator about assignment
     worktree_path: Optional[Path] = None  # Path to worker's git worktree if any
 
     # Terminal-agnostic identifier (auto-populated from iterm_session if not set)
@@ -87,12 +86,7 @@ class ManagedSession:
     def __post_init__(self):
         """Auto-populate terminal_id from iterm_session if not set."""
         if self.terminal_id is None and self.iterm_session is not None:
-            # Use object.__setattr__ since we're in __post_init__
-            object.__setattr__(
-                self,
-                "terminal_id",
-                TerminalId("iterm", self.iterm_session.session_id),
-            )
+            self.terminal_id = TerminalId("iterm", self.iterm_session.session_id)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for MCP tool responses."""
@@ -107,7 +101,7 @@ class ManagedSession:
             "status": self.status.value,
             "created_at": self.created_at.isoformat(),
             "last_activity": self.last_activity.isoformat(),
-            "controller_annotation": self.controller_annotation,
+            "coordinator_annotation": self.coordinator_annotation,
             "worktree_path": str(self.worktree_path) if self.worktree_path else None,
         }
 
@@ -115,30 +109,11 @@ class ManagedSession:
         """Update the last_activity timestamp."""
         self.last_activity = datetime.now()
 
-    def discover_claude_session(self) -> Optional[str]:
-        """
-        Try to discover the Claude session ID from JSONL files.
-
-        Looks for recently modified session files in the project's
-        Claude directory. Note: This finds the most recently modified
-        JSONL, which may not be correct when multiple sessions exist.
-        Prefer discover_claude_session_by_marker() for accurate correlation.
-
-        Returns:
-            Session ID if found, None otherwise
-        """
-        session_id = find_active_session(self.project_path, max_age_seconds=60)
-        if session_id:
-            self.claude_session_id = session_id
-        return session_id
-
     def discover_claude_session_by_marker(self, max_age_seconds: int = 120) -> Optional[str]:
         """
         Discover the Claude session ID by searching for this session's marker.
 
-        This is more accurate than discover_claude_session() when multiple
-        sessions exist for the same project. Requires that a marker message
-        was previously sent to the session.
+        Requires that a marker message was previously sent to the session.
 
         Args:
             max_age_seconds: Only check JSONL files modified within this time
@@ -166,9 +141,9 @@ class ManagedSession:
         Returns:
             Path object, or None if session cannot be discovered
         """
-        # Auto-discover if not already known
+        # Auto-discover if not already known (using marker-based discovery)
         if not self.claude_session_id:
-            self.discover_claude_session()
+            self.discover_claude_session_by_marker()
 
         if not self.claude_session_id:
             return None
