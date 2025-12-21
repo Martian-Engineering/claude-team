@@ -84,19 +84,6 @@ class SessionState:
         return [m for m in self.messages if m.role in ("user", "assistant") and m.content]
 
     @property
-    def is_processing(self) -> bool:
-        """
-        Deprecated: Always returns False.
-
-        Stop hooks are the source of truth for completion detection.
-        Use is_session_stopped() from session_state.py for accurate idle detection.
-
-        Previously checked if last message had tool_uses, but this could disagree
-        with Stop hook state (returning True after the hook fired).
-        """
-        return False
-
-    @property
     def message_count(self) -> int:
         """Total number of conversation messages."""
         return len(self.conversation)

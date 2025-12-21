@@ -94,8 +94,6 @@ class ManagedSession:
         return {
             "session_id": self.session_id,
             "terminal_id": str(self.terminal_id) if self.terminal_id else None,
-            "terminal_type": self.terminal_id.terminal_type if self.terminal_id else None,
-            "native_terminal_id": self.terminal_id.native_id if self.terminal_id else None,
             "name": self.name or self.session_id,
             "project_path": self.project_path,
             "claude_session_id": self.claude_session_id,
