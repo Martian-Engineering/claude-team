@@ -738,15 +738,20 @@ async def list_workers(
     # Sort by created_at
     sessions = sorted(sessions, key=lambda s: s.created_at)
 
-    # Convert to dicts and add message count if JSONL is available
+    # Convert to dicts and add message count + idle status
     results = []
     for session in sessions:
         info = session.to_dict()
+        jsonl_path = session.get_jsonl_path()
         # Try to get conversation stats
         state = session.get_conversation_state()
         if state:
             info["message_count"] = state.message_count
-            info["is_processing"] = state.is_processing
+        # Check idle using stop hook detection
+        if jsonl_path and jsonl_path.exists():
+            info["is_idle"] = check_is_idle(jsonl_path, session.session_id)
+        else:
+            info["is_idle"] = False  # No JSONL = still starting
         results.append(info)
 
     return results
@@ -1215,6 +1220,7 @@ async def examine_worker(
         )
 
     result = session.to_dict()
+    jsonl_path = session.get_jsonl_path()
 
     # Get conversation stats from JSONL
     # Use state.conversation (messages with content) for consistent counts
@@ -1239,10 +1245,14 @@ async def examine_worker(
                 else (assistant_msgs[-1].content if assistant_msgs else None)
             ),
         }
-        result["is_processing"] = state.is_processing
     else:
         result["conversation_stats"] = None
-        result["is_processing"] = None
+
+    # Check idle using stop hook detection
+    if jsonl_path and jsonl_path.exists():
+        result["is_idle"] = check_is_idle(jsonl_path, session.session_id)
+    else:
+        result["is_idle"] = False  # No JSONL = still starting
 
     return result
 
@@ -2037,11 +2047,16 @@ async def resource_sessions(ctx: Context[ServerSession, AppContext]) -> list[dic
 
     for session in sessions:
         info = session.to_dict()
+        jsonl_path = session.get_jsonl_path()
         # Add conversation stats if JSONL is available
         state = session.get_conversation_state()
         if state:
             info["message_count"] = state.message_count
-            info["is_processing"] = state.is_processing
+        # Check idle using stop hook detection
+        if jsonl_path and jsonl_path.exists():
+            info["is_idle"] = check_is_idle(jsonl_path, session.session_id)
+        else:
+            info["is_idle"] = False
         results.append(info)
 
     return results
@@ -2072,6 +2087,7 @@ async def resource_session_status(
         )
 
     result = session.to_dict()
+    jsonl_path = session.get_jsonl_path()
 
     # Get conversation stats from JSONL
     # Use state.conversation (messages with content) for consistent counts
@@ -2096,12 +2112,16 @@ async def resource_session_status(
                 else (assistant_msgs[-1].content if assistant_msgs else None)
             ),
         }
-        result["is_processing"] = state.is_processing
         result["message_count"] = state.message_count
     else:
         result["conversation_stats"] = None
-        result["is_processing"] = None
         result["message_count"] = 0
+
+    # Check idle using stop hook detection
+    if jsonl_path and jsonl_path.exists():
+        result["is_idle"] = check_is_idle(jsonl_path, session.session_id)
+    else:
+        result["is_idle"] = False
 
     return result
 
