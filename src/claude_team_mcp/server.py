@@ -929,6 +929,12 @@ async def message_workers(
 
     # Handle waiting if requested
     if wait_mode != "none" and valid_sessions:
+        # TODO(rabsef-bicrym): Figure a way to delay this polling without a hard wait.
+        # Race condition: We poll for idle immediately after sending, but the JSONL
+        # may not have been updated yet with the new user message. The session still
+        # appears idle from the previous stop hook, causing us to return prematurely.
+        await asyncio.sleep(0.5)
+
         # Get session infos for idle detection
         session_infos = []
         for sid, session in valid_sessions:
