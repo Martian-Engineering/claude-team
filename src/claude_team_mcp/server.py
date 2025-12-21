@@ -753,130 +753,50 @@ async def list_workers(
 
 
 @mcp.tool()
-async def send_message(
-    ctx: Context[ServerSession, AppContext],
-    session_id: str,
-    message: str,
-    wait_for_idle: bool = False,
-    timeout: float = 600.0,
-) -> dict:
-    """
-    Send a message to a managed Claude Code session.
-
-    Injects the message into the specified session's terminal and
-    optionally waits for Claude's response.
-
-    Args:
-        session_id: ID of the target session (from spawn_workers or list_workers)
-        message: The prompt/message to send
-        wait_for_idle: If True, wait for Claude to finish responding (uses stop hook detection)
-        timeout: Maximum seconds to wait for response (if wait_for_idle=True)
-
-    Returns:
-        Dict with success status and optional response content
-    """
-    from .idle_detection import wait_for_idle as wait_idle
-
-    app_ctx = ctx.request_context.lifespan_context
-    registry = app_ctx.registry
-
-    # Look up session (accepts internal ID, terminal ID, or name)
-    session = registry.resolve(session_id)
-    if not session:
-        return error_response(
-            f"Session not found: {session_id}",
-            hint=HINTS["session_not_found"],
-        )
-
-    try:
-        # Update status to busy
-        registry.update_status(session_id, SessionStatus.BUSY)
-
-        # Capture baseline state before sending (for response detection)
-        baseline_uuid = None
-        jsonl_path = session.get_jsonl_path()
-        if jsonl_path and jsonl_path.exists():
-            state = session.get_conversation_state()
-            if state and state.last_assistant_message:
-                baseline_uuid = state.last_assistant_message.uuid
-
-        # Append hint about bd_help tool to help workers understand beads
-        message_with_hint = message + WORKER_MESSAGE_HINT
-
-        # Send the message to the terminal
-        await send_prompt(session.iterm_session, message_with_hint, submit=True)
-
-        result = {
-            "success": True,
-            "session_id": session_id,
-            "message_sent": message[:100] + "..." if len(message) > 100 else message,
-        }
-
-        # Optionally wait for Claude to finish
-        if wait_for_idle:
-            # Use stop hook detection to wait for idle
-            idle_result = await wait_idle(
-                session_id=session.session_id,
-                timeout=timeout,
-            )
-            if idle_result.get("timed_out"):
-                result["response"] = None
-                result["timeout"] = True
-            else:
-                # Get the response after waiting
-                state = session.get_conversation_state()
-                if state and state.last_assistant_message:
-                    result["response"] = state.last_assistant_message.content
-                else:
-                    result["response"] = None
-
-        # Update status back to ready
-        registry.update_status(session_id, SessionStatus.READY)
-
-        return result
-
-    except Exception as e:
-        logger.error(f"Failed to send message: {e}")
-        registry.update_status(session_id, SessionStatus.READY)
-        return error_response(
-            str(e),
-            hint=HINTS["iterm_connection"],
-            session_id=session_id,
-        )
-
-
-@mcp.tool()
-async def broadcast_message(
+async def message_workers(
     ctx: Context[ServerSession, AppContext],
     session_ids: list[str],
     message: str,
-    wait_for_idle: bool = False,
+    wait_mode: str = "none",
     timeout: float = 600.0,
 ) -> dict:
     """
-    Send the same message to multiple Claude Code sessions in parallel.
+    Send a message to one or more Claude Code worker sessions.
 
-    Broadcasts a message to all specified sessions concurrently and returns
-    aggregated results. Useful for coordinating multiple worker sessions
-    or sending the same instruction to a team.
+    Sends the same message to all specified sessions in parallel and optionally
+    waits for workers to finish responding. This is the unified tool for worker
+    communication - use it for both single workers and broadcasts.
+
+    To understand what workers have done, use get_conversation_history or
+    get_session_status to read their logs - don't rely on response content.
 
     Args:
-        session_ids: List of session IDs to send the message to
+        session_ids: List of session IDs to send the message to (1 or more).
+            Accepts internal IDs, terminal IDs, or worker names.
         message: The prompt/message to send to all sessions
-        wait_for_idle: If True, wait for Claude to finish responding in each session
-        timeout: Maximum seconds to wait for responses (if wait_for_idle=True)
+        wait_mode: How to wait for workers:
+            - "none": Fire and forget, return immediately (default)
+            - "any": Wait until at least one worker is idle, then return
+            - "all": Wait until all workers are idle, then return
+        timeout: Maximum seconds to wait (only used if wait_mode != "none")
 
     Returns:
         Dict with:
+            - success: True if all messages were sent successfully
+            - session_ids: List of session IDs that were targeted
             - results: Dict mapping session_id to individual result
-            - success_count: Number of sessions that received the message
-            - failure_count: Number of sessions that failed
-            - total: Total number of sessions targeted
+            - idle_session_ids: Sessions that are idle (only if wait_mode != "none")
+            - all_idle: Whether all sessions are idle (only if wait_mode != "none")
+            - timed_out: Whether the wait timed out (only if wait_mode != "none")
     """
-    from .idle_detection import wait_for_idle as wait_idle
-
     app_ctx = ctx.request_context.lifespan_context
     registry = app_ctx.registry
+
+    # Validate wait_mode
+    if wait_mode not in ("none", "any", "all"):
+        return error_response(
+            f"Invalid wait_mode: {wait_mode}. Must be 'none', 'any', or 'all'",
+        )
 
     if not session_ids:
         return error_response(
@@ -884,8 +804,7 @@ async def broadcast_message(
             hint=HINTS["registry_empty"],
         )
 
-    # Validate all sessions exist first
-    # (fail fast if any session is invalid)
+    # Validate all sessions exist first (fail fast if any session is invalid)
     # Uses resolve() to accept internal ID, terminal ID, or name
     missing_sessions = []
     valid_sessions = []
@@ -909,10 +828,9 @@ async def broadcast_message(
 
     if not valid_sessions:
         return {
+            "success": False,
+            "session_ids": session_ids,
             "results": results,
-            "success_count": 0,
-            "failure_count": len(results),
-            "total": len(session_ids),
             **error_response(
                 "No valid sessions to send to",
                 hint=HINTS["session_not_found"],
@@ -920,22 +838,10 @@ async def broadcast_message(
         }
 
     async def send_to_session(sid: str, session) -> tuple[str, dict]:
-        """
-        Send message to a single session.
-
-        Returns tuple of (session_id, result_dict).
-        """
+        """Send message to a single session. Returns tuple of (session_id, result_dict)."""
         try:
             # Update status to busy
             registry.update_status(sid, SessionStatus.BUSY)
-
-            # Capture baseline state before sending (for response detection)
-            baseline_uuid = None
-            jsonl_path = session.get_jsonl_path()
-            if jsonl_path and jsonl_path.exists():
-                state = session.get_conversation_state()
-                if state and state.last_assistant_message:
-                    baseline_uuid = state.last_assistant_message.uuid
 
             # Append hint about bd_help tool to help workers understand beads
             message_with_hint = message + WORKER_MESSAGE_HINT
@@ -943,34 +849,10 @@ async def broadcast_message(
             # Send the message to the terminal
             await send_prompt(session.iterm_session, message_with_hint, submit=True)
 
-            result = {
+            return (sid, {
                 "success": True,
-                "session_id": sid,
                 "message_sent": message[:100] + "..." if len(message) > 100 else message,
-            }
-
-            # Optionally wait for Claude to finish
-            if wait_for_idle:
-                # Use stop hook detection to wait for idle
-                idle_result = await wait_idle(
-                    session_id=session.session_id,
-                    timeout=timeout,
-                )
-                if idle_result.get("timed_out"):
-                    result["response"] = None
-                    result["timeout"] = True
-                else:
-                    # Get the response after waiting
-                    state = session.get_conversation_state()
-                    if state and state.last_assistant_message:
-                        result["response"] = state.last_assistant_message.content
-                    else:
-                        result["response"] = None
-
-            # Update status back to ready
-            registry.update_status(sid, SessionStatus.READY)
-
-            return (sid, result)
+            })
 
         except Exception as e:
             logger.error(f"Failed to send message to {sid}: {e}")
@@ -978,7 +860,6 @@ async def broadcast_message(
             return (sid, error_response(
                 str(e),
                 hint=HINTS["iterm_connection"],
-                session_id=sid,
                 success=False,
             ))
 
@@ -989,100 +870,68 @@ async def broadcast_message(
     # Process results
     for item in parallel_results:
         if isinstance(item, Exception):
-            # This shouldn't happen since we catch exceptions in send_to_session,
-            # but handle it just in case
-            logger.error(f"Unexpected exception in broadcast: {item}")
+            logger.error(f"Unexpected exception in message_workers: {item}")
             continue
         sid, result = item
         results[sid] = result
 
-    # Compute success/failure counts
+    # Compute overall success
     success_count = sum(1 for r in results.values() if r.get("success", False))
-    failure_count = len(results) - success_count
+    overall_success = success_count == len(session_ids)
 
-    return {
+    # Build base result (no response content - that's the anti-pattern we killed)
+    result = {
+        "success": overall_success,
+        "session_ids": session_ids,
         "results": results,
-        "success_count": success_count,
-        "failure_count": failure_count,
-        "total": len(session_ids),
     }
 
+    # Handle waiting if requested
+    if wait_mode != "none" and valid_sessions:
+        # Get session infos for idle detection
+        session_infos = []
+        for sid, session in valid_sessions:
+            jsonl_path = session.get_jsonl_path()
+            if jsonl_path:
+                session_infos.append(SessionInfo(
+                    jsonl_path=jsonl_path,
+                    session_id=sid,
+                ))
 
-@mcp.tool()
-async def get_response(
-    ctx: Context[ServerSession, AppContext],
-    session_id: str,
-    wait_for_idle: bool = True,
-    timeout: float = 600.0,
-) -> dict:
-    """
-    Get the latest response from a Claude Code session.
+        if session_infos:
+            if wait_mode == "any":
+                idle_result = await wait_for_any_idle_impl(
+                    sessions=session_infos,
+                    timeout=timeout,
+                    poll_interval=2.0,
+                )
+                result["idle_session_ids"] = (
+                    [idle_result["idle_session_id"]]
+                    if idle_result.get("idle_session_id")
+                    else []
+                )
+                result["all_idle"] = False
+                result["timed_out"] = idle_result.get("timed_out", False)
+            else:  # wait_mode == "all"
+                idle_result = await wait_for_all_idle_impl(
+                    sessions=session_infos,
+                    timeout=timeout,
+                    poll_interval=2.0,
+                )
+                result["idle_session_ids"] = idle_result.get("idle_session_ids", [])
+                result["all_idle"] = idle_result.get("all_idle", False)
+                result["timed_out"] = idle_result.get("timed_out", False)
 
-    Reads the session's JSONL file to get the last assistant message.
-    Can optionally wait for a response if the session is still processing.
+            # Update status for idle sessions
+            for sid in result.get("idle_session_ids", []):
+                registry.update_status(sid, SessionStatus.READY)
+    else:
+        # No waiting - mark sessions as ready immediately
+        for sid, session in valid_sessions:
+            if results.get(sid, {}).get("success"):
+                registry.update_status(sid, SessionStatus.READY)
 
-    Args:
-        session_id: ID of the target session
-        wait_for_idle: If True, wait for Claude to finish if still processing (uses stop hook detection)
-        timeout: Maximum seconds to wait
-
-    Returns:
-        Dict with status, response content, and metadata
-    """
-    from .idle_detection import wait_for_idle as wait_idle
-
-    app_ctx = ctx.request_context.lifespan_context
-    registry = app_ctx.registry
-
-    # Look up session (accepts internal ID, terminal ID, or name)
-    session = registry.resolve(session_id)
-    if not session:
-        return error_response(
-            f"Session not found: {session_id}",
-            hint=HINTS["session_not_found"],
-        )
-
-    jsonl_path = session.get_jsonl_path()
-    if not jsonl_path or not jsonl_path.exists():
-        return error_response(
-            "No JSONL session file found - Claude may not have started yet",
-            hint=HINTS["no_jsonl_file"],
-            session_id=session_id,
-            status=session.status.value,
-        )
-
-    # Get current state
-    state = session.get_conversation_state()
-    if not state:
-        return error_response(
-            "Could not parse session state",
-            hint="The JSONL file may be corrupted. Try closing and spawning a new session",
-            session_id=session_id,
-            status=session.status.value,
-        )
-
-    # If wait_for_idle=True, wait for Claude to finish
-    if wait_for_idle:
-        # Use stop hook detection to wait for idle
-        idle_result = await wait_idle(
-            session_id=session.session_id,
-            timeout=timeout,
-        )
-        # Refresh state after waiting
-        state = session.get_conversation_state()
-
-    # Build response
-    last_msg = state.last_assistant_message if state else None
-
-    return {
-        "session_id": session_id,
-        "status": session.status.value,
-        "is_processing": state.is_processing if state else False,
-        "last_response": last_msg.content if last_msg else None,
-        "message_id": last_msg.uuid if last_msg else None,
-        "tool_uses": [t.get("name") for t in (last_msg.tool_uses if last_msg else [])],
-        "message_count": state.message_count if state else 0,
-    }
+    return result
 
 
 # Default page size for conversation history
