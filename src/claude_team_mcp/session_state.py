@@ -17,6 +17,16 @@ from typing import Optional
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 
+def parse_timestamp(entry: dict) -> datetime:
+    """Parse ISO timestamp from JSONL entry, handling Z suffix."""
+    try:
+        return datetime.fromisoformat(
+            entry.get("timestamp", "").replace("Z", "+00:00")
+        )
+    except (ValueError, AttributeError):
+        return datetime.now()
+
+
 # =============================================================================
 # Data Classes
 # =============================================================================
@@ -596,13 +606,7 @@ def parse_session(jsonl_path: Path) -> SessionState:
                 text_content = "\n".join(text_parts)
                 thinking_content = "\n".join(thinking_parts) if thinking_parts else None
 
-            # Parse timestamp
-            try:
-                ts = datetime.fromisoformat(
-                    entry.get("timestamp", "").replace("Z", "+00:00")
-                )
-            except (ValueError, AttributeError):
-                ts = datetime.now()
+            ts = parse_timestamp(entry)
 
             messages.append(
                 Message(
@@ -701,13 +705,7 @@ def parse_stop_hook_entries(jsonl_path: Path) -> list[StopHookEntry]:
                 if entry.get("subtype") != "stop_hook_summary":
                     continue
 
-                # Parse timestamp
-                try:
-                    ts = datetime.fromisoformat(
-                        entry.get("timestamp", "").replace("Z", "+00:00")
-                    )
-                except (ValueError, AttributeError):
-                    ts = datetime.now()
+                ts = parse_timestamp(entry)
 
                 # Extract commands from hookInfos
                 hook_infos = entry.get("hookInfos", [])
@@ -800,15 +798,10 @@ def is_session_stopped(
                         cmd = h.get("command", "")
                         marker_id = extract_stop_hook_marker(cmd)
                         if marker_id == session_id:
-                            try:
-                                ts = datetime.fromisoformat(
-                                    entry.get("timestamp", "").replace("Z", "+00:00")
-                                )
-                                # Track the latest stop hook for this session
-                                if last_stop_hook_ts is None or ts > last_stop_hook_ts:
-                                    last_stop_hook_ts = ts
-                            except (ValueError, AttributeError):
-                                pass
+                            ts = parse_timestamp(entry)
+                            # Track the latest stop hook for this session
+                            if last_stop_hook_ts is None or ts > last_stop_hook_ts:
+                                last_stop_hook_ts = ts
                             break
                     continue
 
@@ -831,16 +824,10 @@ def is_session_stopped(
                 elif not content:
                     continue
 
-                # Parse timestamp
-                try:
-                    msg_ts = datetime.fromisoformat(
-                        entry.get("timestamp", "").replace("Z", "+00:00")
-                    )
-                    # Track the latest message timestamp
-                    if last_message_ts is None or msg_ts > last_message_ts:
-                        last_message_ts = msg_ts
-                except (ValueError, AttributeError):
-                    continue
+                msg_ts = parse_timestamp(entry)
+                # Track the latest message timestamp
+                if last_message_ts is None or msg_ts > last_message_ts:
+                    last_message_ts = msg_ts
 
     except FileNotFoundError:
         return False

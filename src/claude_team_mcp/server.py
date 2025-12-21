@@ -338,7 +338,7 @@ mcp = FastMCP(
 
 
 # =============================================================================
-# Tool Implementations (Placeholders - will be implemented in separate tasks)
+# Tool Implementations
 # =============================================================================
 
 
@@ -884,7 +884,6 @@ async def message_workers(
     success_count = sum(1 for r in results.values() if r.get("success", False))
     overall_success = success_count == len(session_ids)
 
-    # Build base result (no response content - that's the anti-pattern we killed)
     result = {
         "success": overall_success,
         "session_ids": session_ids,
@@ -1597,12 +1596,12 @@ async def _close_single_worker(
     try:
         # Send Ctrl+C to interrupt any running operation
         await send_key(session.iterm_session, "ctrl-c")
-        # TODO: Programmatically time these actions
+        # TODO(rabsef-bicrym): Programmatically time these actions
         await asyncio.sleep(1.0)
 
         # Send /exit to quit Claude
         await send_prompt(session.iterm_session, "/exit", submit=True)
-        # TODO: Programmatically time these actions
+        # TODO(rabsef-bicrym): Programmatically time these actions
         await asyncio.sleep(1.0)
 
         # Clean up worktree if exists (keeps branch alive for cherry-picking)
