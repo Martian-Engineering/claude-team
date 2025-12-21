@@ -86,8 +86,8 @@ def error_response(
 # Common hints for reusable error scenarios
 HINTS = {
     "session_not_found": (
-        "Run list_sessions to see available sessions, or discover_sessions "
-        "to find orphaned iTerm2 sessions that can be imported"
+        "Run list_workers to see available workers, or discover_workers "
+        "to find orphaned iTerm2 sessions that can be adopted"
     ),
     "project_path_missing": (
         "Verify the path exists. For git worktrees, check 'git worktree list'. "
@@ -98,8 +98,8 @@ HINTS = {
         "iTerm2 → Preferences → General → Magic → Enable Python API"
     ),
     "registry_empty": (
-        "No sessions are being managed. Use spawn_team to create a new session, "
-        "or discover_sessions to find existing Claude sessions in iTerm2"
+        "No workers are being managed. Use spawn_workers to create new workers, "
+        "or discover_workers to find existing Claude sessions in iTerm2"
     ),
     "no_jsonl_file": (
         "Claude may not have started yet or the session file doesn't exist. "
@@ -108,7 +108,7 @@ HINTS = {
     ),
     "project_path_detection_failed": (
         "Could not auto-detect project path from terminal. Provide project_path "
-        "explicitly when calling import_session"
+        "explicitly when calling adopt_worker"
     ),
     "session_busy": (
         "The session is currently processing. Wait for it to finish, or use "
@@ -343,7 +343,7 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-async def spawn_team(
+async def spawn_workers(
     ctx: Context[ServerSession, AppContext],
     projects: dict[str, str],
     layout: str = "auto",
@@ -415,7 +415,7 @@ async def spawn_team(
             - coordinator_guidance: Instructions for the coordinator (standard mode only)
 
     Example (standard mode):
-        spawn_team(
+        spawn_workers(
             projects={
                 "left": "/path/to/frontend",
                 "right": "/path/to/backend",
@@ -426,7 +426,7 @@ async def spawn_team(
         # Returns coordinator_guidance with worker management instructions
 
     Example (custom mode):
-        spawn_team(
+        spawn_workers(
             projects={"main": "/path/to/project"},
             layout="single",
             custom_prompt="You are a code reviewer. Review all changed files.",
@@ -691,7 +691,7 @@ async def spawn_team(
 
     except ValueError as e:
         # Layout or pane name validation errors from the primitive
-        logger.error(f"Validation error in spawn_team: {e}")
+        logger.error(f"Validation error in spawn_workers: {e}")
         return error_response(str(e))
     except Exception as e:
         logger.error(f"Failed to spawn team: {e}")
@@ -702,7 +702,7 @@ async def spawn_team(
 
 
 @mcp.tool()
-async def list_sessions(
+async def list_workers(
     ctx: Context[ServerSession, AppContext],
     status_filter: str | None = None,
 ) -> list[dict]:
@@ -767,7 +767,7 @@ async def send_message(
     optionally waits for Claude's response.
 
     Args:
-        session_id: ID of the target session (from spawn_team or list_sessions)
+        session_id: ID of the target session (from spawn_workers or list_workers)
         message: The prompt/message to send
         wait_for_idle: If True, wait for Claude to finish responding (uses stop hook detection)
         timeout: Maximum seconds to wait for response (if wait_for_idle=True)
@@ -1195,7 +1195,7 @@ async def bd_help() -> dict:
 
 
 @mcp.tool()
-async def get_conversation_history(
+async def read_worker_logs(
     ctx: Context[ServerSession, AppContext],
     session_id: str,
     pages: int = 1,
@@ -1337,7 +1337,7 @@ async def get_conversation_history(
 
 
 @mcp.tool()
-async def get_session_status(
+async def examine_worker(
     ctx: Context[ServerSession, AppContext],
     session_id: str,
 ) -> dict:
@@ -1399,16 +1399,16 @@ async def get_session_status(
 
 
 @mcp.tool()
-async def annotate_session(
+async def annotate_worker(
     ctx: Context[ServerSession, AppContext],
     session_id: str,
     annotation: str,
 ) -> dict:
     """
-    Add a coordinator annotation to a session.
+    Add a coordinator annotation to a worker.
 
     Coordinators use this to track what task each worker is assigned to.
-    These annotations appear in list_sessions output.
+    These annotations appear in list_workers output.
 
     Args:
         session_id: The session to annotate
@@ -1440,7 +1440,7 @@ async def annotate_session(
 
 
 @mcp.tool()
-async def discover_sessions(
+async def discover_workers(
     ctx: Context[ServerSession, AppContext],
 ) -> dict:
     """
@@ -1601,24 +1601,24 @@ async def discover_sessions(
 
 
 @mcp.tool()
-async def import_session(
+async def adopt_worker(
     ctx: Context[ServerSession, AppContext],
     iterm_session_id: str,
     session_name: str | None = None,
 ) -> dict:
     """
-    Import an existing iTerm2 Claude Code session into the MCP registry.
+    Adopt an existing iTerm2 Claude Code session into the MCP registry.
 
-    Takes an iTerm2 session ID (from discover_sessions) and registers it
+    Takes an iTerm2 session ID (from discover_workers) and registers it
     for management. Only works for sessions originally spawned by claude-team
     (which have markers in their JSONL for reliable correlation).
 
     Args:
-        iterm_session_id: The iTerm2 session ID (from discover_sessions)
-        session_name: Optional friendly name for the session
+        iterm_session_id: The iTerm2 session ID (from discover_workers)
+        session_name: Optional friendly name for the worker
 
     Returns:
-        Dict with imported session info, or error if session not found
+        Dict with adopted worker info, or error if session not found
     """
     from .session_state import find_jsonl_by_iterm_id
 
@@ -1652,7 +1652,7 @@ async def import_session(
     if not target_session:
         return error_response(
             f"iTerm2 session not found: {iterm_session_id}",
-            hint="Run discover_sessions to scan for active Claude sessions in iTerm2",
+            hint="Run discover_workers to scan for active Claude sessions in iTerm2",
         )
 
     # Use marker-based discovery to recover original session identity
@@ -1661,7 +1661,7 @@ async def import_session(
     if not match:
         return error_response(
             "Session not found or not spawned by claude-team",
-            hint="import_session only works for sessions originally spawned by claude-team. "
+            hint="adopt_worker only works for sessions originally spawned by claude-team. "
             "External sessions cannot be reliably correlated to their JSONL files.",
             iterm_session_id=iterm_session_id,
         )
@@ -2115,7 +2115,7 @@ async def resource_sessions(ctx: Context[ServerSession, AppContext]) -> list[dic
 
     Returns a list of session summaries including ID, name, project path,
     status, and conversation stats if available. This is a read-only
-    resource alternative to the list_sessions tool.
+    resource alternative to the list_workers tool.
     """
     app_ctx = ctx.request_context.lifespan_context
     registry = app_ctx.registry
