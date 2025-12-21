@@ -83,25 +83,25 @@ class TestGetCoordinatorGuidance:
         guidance = get_coordinator_guidance()
         assert "COORDINATOR" in guidance
 
-    def test_mentions_list_sessions(self):
-        """Guidance should mention list_sessions command."""
+    def test_mentions_list_workers(self):
+        """Guidance should mention list_workers command."""
         guidance = get_coordinator_guidance()
-        assert "list_sessions" in guidance
+        assert "list_workers" in guidance
 
-    def test_mentions_is_idle(self):
-        """Guidance should mention is_idle command."""
+    def test_mentions_check_idle_workers(self):
+        """Guidance should mention check_idle_workers command."""
         guidance = get_coordinator_guidance()
-        assert "is_idle" in guidance
+        assert "check_idle_workers" in guidance
 
-    def test_mentions_annotate_session(self):
-        """Guidance should mention annotate_session command."""
+    def test_mentions_annotate_worker(self):
+        """Guidance should mention annotate_worker command."""
         guidance = get_coordinator_guidance()
-        assert "annotate_session" in guidance
+        assert "annotate_worker" in guidance
 
-    def test_mentions_get_conversation_history(self):
-        """Guidance should mention get_conversation_history command."""
+    def test_mentions_read_worker_logs(self):
+        """Guidance should mention read_worker_logs command."""
         guidance = get_coordinator_guidance()
-        assert "get_conversation_history" in guidance
+        assert "read_worker_logs" in guidance
 
     def test_mentions_idle_detection(self):
         """Guidance should explain idle detection."""

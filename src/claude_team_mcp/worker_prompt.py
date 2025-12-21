@@ -83,20 +83,20 @@ Your team is ready. Here's what your workers know and what they expect from you:
 
 **Your responsibilities:**
 1. **Assign clear tasks** — Workers will explain in their response if something's unclear
-2. **Monitor workers** — Use `is_idle(session_id)` to check if they've finished
-3. **Read their work** — Use `get_conversation_history(session_id)` to see what they did
-4. **Annotate sessions** — Use `annotate_session(session_id, note)` to track assignments
+2. **Monitor workers** — Use `check_idle_workers([session_id])` to check if they've finished
+3. **Read their work** — Use `read_worker_logs(session_id)` to see what they did
+4. **Annotate sessions** — Use `annotate_worker(session_id, annotation)` to track assignments
 5. **Review and close beads** — Workers comment progress; you verify and close
 
 **Checking on workers:**
-- `list_sessions` — See all workers and their status
-- `is_idle(session_id)` — Check if a worker is idle (finished responding)
-- `get_conversation_history(session_id)` — Read what a worker has been doing
-- `get_session_status(session_id)` — Quick status check
+- `list_workers` — See all workers and their status
+- `check_idle_workers([session_id])` — Check if a worker is idle (finished responding)
+- `read_worker_logs(session_id)` — Read what a worker has been doing
+- `examine_worker(session_id)` — Quick status check
 
 **Idle detection:**
 Worker completion is detected automatically via Stop hooks.
-- `is_idle(session_id)` — Check if a worker has finished (returns idle: true/false)
+- `check_idle_workers([session_id])` — Check if a worker has finished (returns idle: true/false)
 - `wait_idle_workers([session_id], timeout=600)` — Block until worker(s) finish
 - `wait_idle_workers(session_ids, mode="any")` — Return when first worker finishes
 
@@ -106,7 +106,7 @@ The system knows the instant they finish responding — no markers needed.
 
 At one end: **Hands-off** — Dispatch tasks to workers, then continue your conversation
 with the user. Check in on workers when the user asks, or prompt them occasionally
-("Want me to check on the team?"). Use `is_idle` for quick polls.
+("Want me to check on the team?"). Use `check_idle_workers` for quick polls.
 
 At the other end: **Fully autonomous** — The user sets a goal, you break it into tasks
 (probably via beads), dispatch workers, and use `wait_idle_workers([session_id])` or
