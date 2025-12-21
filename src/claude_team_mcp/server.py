@@ -1552,46 +1552,37 @@ async def adopt_worker(
     }
 
 
-@mcp.tool()
-async def close_session(
-    ctx: Context[ServerSession, AppContext],
+async def _close_single_worker(
+    session,
     session_id: str,
+    registry: "SessionRegistry",
     force: bool = False,
 ) -> dict:
     """
-    Close a managed Claude Code session.
+    Close a single worker session.
 
-    Gracefully terminates the Claude session and optionally closes
-    the iTerm2 window/pane.
+    Internal helper for close_workers. Handles the actual close logic
+    for one session.
 
     Args:
+        session: The ManagedSession object
         session_id: ID of the session to close
+        registry: The session registry
         force: If True, force close even if session is busy
 
     Returns:
-        Dict with success status
+        Dict with success status and worktree_cleaned flag
     """
     from .iterm_utils import send_key, close_pane
 
-    app_ctx = ctx.request_context.lifespan_context
-    registry = app_ctx.registry
-
-    # Look up session (accepts internal ID, terminal ID, or name)
-    session = registry.resolve(session_id)
-    if not session:
-        return error_response(
-            f"Session not found: {session_id}",
-            hint=HINTS["session_not_found"],
-        )
-
     # Check if busy
     if session.status == SessionStatus.BUSY and not force:
-        return error_response(
-            "Session is busy",
-            hint=HINTS["session_busy"],
-            session_id=session_id,
-            status=session.status.value,
-        )
+        return {
+            "success": False,
+            "error": "Session is busy",
+            "hint": HINTS["session_busy"],
+            "worktree_cleaned": False,
+        }
 
     try:
         # Send Ctrl+C to interrupt any running operation
@@ -1625,21 +1616,99 @@ async def close_session(
 
         return {
             "success": True,
-            "session_id": session_id,
-            "message": "Session closed, pane terminated, and removed from registry",
             "worktree_cleaned": worktree_cleaned,
         }
 
     except Exception as e:
-        logger.error(f"Failed to close session: {e}")
+        logger.error(f"Failed to close session {session_id}: {e}")
         # Still try to remove from registry
         registry.remove(session_id)
         return {
             "success": True,
-            "session_id": session_id,
             "warning": f"Session removed but cleanup may be incomplete: {e}",
             "worktree_cleaned": False,
         }
+
+
+@mcp.tool()
+async def close_workers(
+    ctx: Context[ServerSession, AppContext],
+    session_ids: list[str],
+    force: bool = False,
+) -> dict:
+    """
+    Close one or more managed Claude Code sessions.
+
+    Gracefully terminates the Claude sessions in parallel and closes
+    their iTerm2 panes. All session_ids must exist in the registry.
+
+    Args:
+        session_ids: List of session IDs to close (1 or more required)
+        force: If True, force close even if sessions are busy
+
+    Returns:
+        Dict with:
+            - session_ids: List of session IDs that were requested
+            - results: Dict mapping session_id to individual result
+            - success_count: Number of sessions closed successfully
+            - failure_count: Number of sessions that failed to close
+    """
+    app_ctx = ctx.request_context.lifespan_context
+    registry = app_ctx.registry
+
+    if not session_ids:
+        return error_response(
+            "No session_ids provided",
+            hint="Provide at least one session_id to close",
+        )
+
+    # Validate all sessions exist first (fail fast)
+    sessions_to_close = []
+    missing_sessions = []
+
+    for sid in session_ids:
+        session = registry.resolve(sid)
+        if not session:
+            missing_sessions.append(sid)
+        else:
+            sessions_to_close.append((sid, session))
+
+    # If any sessions are missing, fail the entire operation
+    if missing_sessions:
+        return error_response(
+            f"Sessions not found: {', '.join(missing_sessions)}",
+            hint=HINTS["session_not_found"],
+            session_ids=session_ids,
+            missing=missing_sessions,
+        )
+
+    # Close all sessions in parallel
+    async def close_one(sid: str, session) -> tuple[str, dict]:
+        result = await _close_single_worker(session, sid, registry, force)
+        return (sid, result)
+
+    tasks = [close_one(sid, session) for sid, session in sessions_to_close]
+    parallel_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Aggregate results
+    results = {}
+    for item in parallel_results:
+        if isinstance(item, Exception):
+            # Shouldn't happen since _close_single_worker catches exceptions
+            logger.error(f"Unexpected exception in close_workers: {item}")
+            continue
+        sid, result = item
+        results[sid] = result
+
+    success_count = sum(1 for r in results.values() if r.get("success", False))
+    failure_count = len(results) - success_count
+
+    return {
+        "session_ids": session_ids,
+        "results": results,
+        "success_count": success_count,
+        "failure_count": failure_count,
+    }
 
 
 # =============================================================================
