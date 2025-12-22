@@ -25,7 +25,11 @@ from ..iterm_utils import (
     send_prompt,
 )
 from ..names import pick_names_for_count
-from ..profile import PROFILE_NAME, get_or_create_profile
+from ..profile import (
+    PROFILE_NAME,
+    get_or_create_profile,
+    apply_appearance_colors,
+)
 from ..registry import SessionStatus
 from ..worker_prompt import generate_worker_prompt, get_coordinator_guidance
 from ..worktree import (
@@ -279,6 +283,9 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
 
                 # Set badge text to show iconic name
                 customization.set_badge_text(iconic_name)
+
+                # Apply current appearance mode colors (light/dark)
+                await apply_appearance_colors(customization, connection)
 
                 profile_customizations[pane_name] = customization
 

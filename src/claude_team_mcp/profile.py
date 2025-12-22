@@ -294,6 +294,26 @@ async def get_or_create_profile(connection: "ItermConnection") -> str:
     return PROFILE_NAME
 
 
+async def apply_appearance_colors(
+    profile: "LocalWriteOnlyProfile",
+    connection: "ItermConnection",
+) -> None:
+    """
+    Apply current appearance mode colors to a session profile.
+
+    Detects the current macOS light/dark mode and applies the appropriate
+    color scheme to the given profile. Call this when creating per-session
+    customizations to ensure workers match the current system appearance.
+
+    Args:
+        profile: The LocalWriteOnlyProfile to modify
+        connection: Active iTerm2 connection (needed for appearance detection)
+    """
+    mode = await detect_appearance_mode(connection)
+    colors = get_colors_for_mode(mode)
+    _apply_colors_to_profile(profile, colors)
+
+
 def _apply_colors_to_profile(
     profile: "LocalWriteOnlyProfile",
     colors: dict,
