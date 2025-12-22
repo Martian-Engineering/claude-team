@@ -6,9 +6,13 @@ Provides adopt_worker for importing existing iTerm2 Claude Code sessions.
 
 import logging
 import os
+from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
+
+if TYPE_CHECKING:
+    from ..server import AppContext
 
 from ..registry import SessionStatus
 from ..session_state import find_jsonl_by_iterm_id

@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 # Claude projects directory
@@ -47,9 +47,9 @@ class Message:
         preview = self.content[:40] + "..." if len(self.content) > 40 else self.content
         return f"Message({self.role}: {preview!r})"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
-        result = {
+        result: dict[str, Any] = {
             "role": self.role,
             "content": self.content,
             "timestamp": self.timestamp.isoformat(),

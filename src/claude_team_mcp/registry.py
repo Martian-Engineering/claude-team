@@ -10,7 +10,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from iterm2.session import Session as ItermSession
 
 from .session_state import get_project_dir, parse_session
 
@@ -68,7 +71,7 @@ class ManagedSession:
     """
 
     session_id: str  # Our assigned ID (e.g., "worker-1")
-    iterm_session: object  # iterm2.Session
+    iterm_session: "ItermSession"
     project_path: str
     claude_session_id: Optional[str] = None  # Discovered from JSONL
     name: Optional[str] = None  # Optional friendly name
@@ -228,7 +231,7 @@ class SessionRegistry:
 
     def add(
         self,
-        iterm_session: object,
+        iterm_session: "ItermSession",
         project_path: str,
         name: Optional[str] = None,
         session_id: Optional[str] = None,

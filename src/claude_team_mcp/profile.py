@@ -7,6 +7,12 @@ Includes automatic dark/light mode detection and consistent visual styling.
 
 import logging
 import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from iterm2.color import Color as ItermColor
+    from iterm2.connection import Connection as ItermConnection
+    from iterm2.profile import LocalWriteOnlyProfile
 
 from .subprocess_cache import cached_system_profiler
 
@@ -130,7 +136,7 @@ def calculate_screen_dimensions() -> tuple[int, int]:
 # =============================================================================
 
 
-async def detect_appearance_mode(connection: "iterm2.Connection") -> str:
+async def detect_appearance_mode(connection: "ItermConnection") -> str:
     """
     Detect the current macOS appearance mode (light or dark).
 
@@ -144,10 +150,13 @@ async def detect_appearance_mode(connection: "iterm2.Connection") -> str:
         'light' or 'dark' based on system appearance
     """
     try:
-        import iterm2
+        from iterm2.app import async_get_app
 
         # Get the app object to query effective theme
-        app = await iterm2.async_get_app(connection)
+        app = await async_get_app(connection)
+        if app is None:
+            logger.warning("Could not get iTerm2 app, defaulting to dark")
+            return "dark"
 
         # iTerm2's effective_theme returns a list of theme components
         # Common values include 'dark', 'light', 'automatic'
@@ -196,7 +205,7 @@ def get_colors_for_mode(mode: str) -> dict:
 # =============================================================================
 
 
-async def get_or_create_profile(connection: "iterm2.Connection") -> str:
+async def get_or_create_profile(connection: "ItermConnection") -> str:
     """
     Get or create the claude-team iTerm2 profile.
 
@@ -215,10 +224,11 @@ async def get_or_create_profile(connection: "iterm2.Connection") -> str:
         use create_session_customizations() to apply per-session
         customizations like tab color and title.
     """
-    import iterm2
+    from iterm2.profile import LocalWriteOnlyProfile as LWOProfile
+    from iterm2.profile import PartialProfile
 
     # Get all existing profiles
-    all_profiles = await iterm2.PartialProfile.async_query(connection)
+    all_profiles = await PartialProfile.async_query(connection)
     profile_names = [p.name for p in all_profiles if p.name]
 
     # Check if our profile already exists
@@ -241,10 +251,6 @@ async def get_or_create_profile(connection: "iterm2.Connection") -> str:
     if not source_profile:
         raise RuntimeError("No profiles found to use as template")
 
-    # Create our profile as a copy of the source
-    # First get the full profile to access all properties
-    full_source = await source_profile.async_get_full_profile()
-
     # Create a new profile with our name
     # iTerm2 doesn't have a direct "create profile" API, so we use
     # LocalWriteOnlyProfile to define settings and create a session with it
@@ -254,7 +260,7 @@ async def get_or_create_profile(connection: "iterm2.Connection") -> str:
     colors = get_colors_for_mode(mode)
 
     # Create the profile settings
-    profile = iterm2.LocalWriteOnlyProfile()
+    profile = LWOProfile()
     profile.set_name(PROFILE_NAME)
 
     # Font configuration - use async_set methods for font
@@ -289,7 +295,7 @@ async def get_or_create_profile(connection: "iterm2.Connection") -> str:
 
 
 def _apply_colors_to_profile(
-    profile: "iterm2.LocalWriteOnlyProfile",
+    profile: "LocalWriteOnlyProfile",
     colors: dict,
 ) -> None:
     """
@@ -302,10 +308,10 @@ def _apply_colors_to_profile(
         profile: The profile to modify
         colors: Dictionary of color names to RGB tuples
     """
-    import iterm2
+    from iterm2.color import Color
 
-    def rgb_to_color(rgb: tuple[int, int, int]) -> "iterm2.Color":
-        return iterm2.Color(rgb[0], rgb[1], rgb[2])
+    def rgb_to_color(rgb: tuple[int, int, int]) -> "ItermColor":
+        return Color(rgb[0], rgb[1], rgb[2])
 
     # Basic colors
     if "foreground" in colors:

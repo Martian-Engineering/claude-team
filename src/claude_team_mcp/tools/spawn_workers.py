@@ -9,9 +9,13 @@ import logging
 import os
 import time
 import uuid
+from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
+
+if TYPE_CHECKING:
+    from ..server import AppContext
 
 from ..colors import generate_tab_color
 from ..formatting import format_session_title
@@ -128,7 +132,7 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
             )
             # Workers receive your custom prompt, no coordinator_guidance returned
         """
-        import iterm2
+        from iterm2.profile import LocalWriteOnlyProfile
 
         from ..session_state import generate_marker_message, await_marker_in_jsonl
         from pathlib import Path
@@ -194,7 +198,7 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
 
             # Create profile customizations for each pane
             # Each pane gets a unique color from the sequence and a badge showing iconic name
-            profile_customizations: dict[str, iterm2.LocalWriteOnlyProfile] = {}
+            profile_customizations: dict[str, LocalWriteOnlyProfile] = {}
             layout_pane_names = LAYOUT_PANE_NAMES[layout]
 
             # Pick iconic names for sessions
@@ -259,7 +263,7 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 if pane_name not in projects:
                     continue  # Skip panes not being used
 
-                customization = iterm2.LocalWriteOnlyProfile()
+                customization = LocalWriteOnlyProfile()
 
                 # Get the iconic name for this pane
                 iconic_name = pane_to_iconic[pane_name]
@@ -375,8 +379,11 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
                 await app.async_activate()
                 # Get window from any of the sessions (they're all in the same window)
                 any_session = next(iter(pane_sessions.values()))
-                window = any_session.tab.window
-                await window.async_activate()
+                tab = any_session.tab
+                if tab is not None:
+                    window = tab.window
+                    if window is not None:
+                        await window.async_activate()
             except Exception as e:
                 logger.debug(f"Failed to re-activate window: {e}")
 

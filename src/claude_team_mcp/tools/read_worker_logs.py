@@ -4,8 +4,13 @@ Read worker logs tool.
 Provides read_worker_logs for getting conversation history from a Claude Code session.
 """
 
+from typing import TYPE_CHECKING
+
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
+
+if TYPE_CHECKING:
+    from ..server import AppContext
 
 from ..utils import error_response, HINTS, get_session_or_error, CONVERSATION_PAGE_SIZE
 

@@ -10,6 +10,11 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from iterm2.app import App as ItermApp
+    from iterm2.connection import Connection as ItermConnection
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
@@ -41,8 +46,8 @@ class AppContext:
     This is the persistent state that makes the MCP server useful.
     """
 
-    iterm_connection: object  # iterm2.Connection
-    iterm_app: object  # iterm2.App
+    iterm_connection: "ItermConnection"
+    iterm_app: "ItermApp"
     registry: SessionRegistry
 
 
@@ -51,7 +56,7 @@ class AppContext:
 # =============================================================================
 
 
-async def refresh_iterm_connection() -> tuple["iterm2.Connection", "iterm2.App"]:
+async def refresh_iterm_connection() -> tuple["ItermConnection", "ItermApp"]:
     """
     Create a fresh iTerm2 connection.
 
@@ -65,12 +70,15 @@ async def refresh_iterm_connection() -> tuple["iterm2.Connection", "iterm2.App"]
     Raises:
         RuntimeError: If connection fails
     """
-    import iterm2
+    from iterm2.app import async_get_app
+    from iterm2.connection import Connection
 
     logger.debug("Creating fresh iTerm2 connection...")
     try:
-        connection = await iterm2.Connection.async_create()
-        app = await iterm2.async_get_app(connection)
+        connection = await Connection.async_create()
+        app = await async_get_app(connection)
+        if app is None:
+            raise RuntimeError("Could not get iTerm2 app")
         logger.debug("Fresh iTerm2 connection established")
         return connection, app
     except Exception as e:
@@ -78,7 +86,7 @@ async def refresh_iterm_connection() -> tuple["iterm2.Connection", "iterm2.App"]
         raise RuntimeError("Could not connect to iTerm2") from e
 
 
-async def ensure_connection(app_ctx: "AppContext") -> tuple["iterm2.Connection", "iterm2.App"]:
+async def ensure_connection(app_ctx: "AppContext") -> tuple["ItermConnection", "ItermApp"]:
     """
     Ensure we have a working iTerm2 connection, refreshing if stale.
 
@@ -92,7 +100,7 @@ async def ensure_connection(app_ctx: "AppContext") -> tuple["iterm2.Connection",
     Returns:
         Tuple of (connection, app) - either existing or refreshed
     """
-    import iterm2
+    from iterm2.app import async_get_app
 
     connection = app_ctx.iterm_connection
     app = app_ctx.iterm_app
@@ -100,8 +108,11 @@ async def ensure_connection(app_ctx: "AppContext") -> tuple["iterm2.Connection",
     # Test if connection is still alive by trying a simple operation
     try:
         # async_get_app is a lightweight call that tests the connection
-        app = await iterm2.async_get_app(connection)
-        return connection, app
+        refreshed_app = await async_get_app(connection)
+        if refreshed_app is not None:
+            return connection, refreshed_app
+        # App is None, need to refresh
+        raise RuntimeError("App is None, refreshing connection")
     except Exception as e:
         logger.warning(f"iTerm2 connection appears stale ({e}), refreshing...")
         # Connection is dead, create a new one
@@ -129,7 +140,8 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 
     # Import iterm2 here to fail fast if not available
     try:
-        import iterm2
+        from iterm2.app import async_get_app
+        from iterm2.connection import Connection
     except ImportError as e:
         logger.error(
             "iterm2 package not found. Install with: uv add iterm2\n"
@@ -140,8 +152,10 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     # Connect to iTerm2
     logger.info("Connecting to iTerm2...")
     try:
-        connection = await iterm2.Connection.async_create()
-        app = await iterm2.async_get_app(connection)
+        connection = await Connection.async_create()
+        app = await async_get_app(connection)
+        if app is None:
+            raise RuntimeError("Could not get iTerm2 app")
         logger.info("Connected to iTerm2 successfully")
     except Exception as e:
         logger.error(f"Failed to connect to iTerm2: {e}")

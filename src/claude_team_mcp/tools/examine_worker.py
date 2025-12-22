@@ -4,8 +4,13 @@ Examine worker tool.
 Provides examine_worker for getting detailed status of a Claude Code session.
 """
 
+from typing import TYPE_CHECKING
+
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
+
+if TYPE_CHECKING:
+    from ..server import AppContext
 
 from ..utils import get_session_or_error
 

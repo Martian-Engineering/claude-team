@@ -6,9 +6,13 @@ Provides message_workers for sending messages to Claude Code worker sessions.
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
+
+if TYPE_CHECKING:
+    from ..server import AppContext
 
 from ..idle_detection import (
     wait_for_all_idle as wait_for_all_idle_impl,
@@ -142,9 +146,10 @@ def register_tools(mcp: FastMCP) -> None:
 
         # Process results
         for item in parallel_results:
-            if isinstance(item, Exception):
+            if isinstance(item, BaseException):
                 logger.error(f"Unexpected exception in message_workers: {item}")
                 continue
+            # Type narrowing: item is now tuple[str, dict]
             sid, result = item
             results[sid] = result
 

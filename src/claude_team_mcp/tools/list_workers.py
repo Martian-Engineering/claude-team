@@ -4,8 +4,13 @@ List workers tool.
 Provides list_workers for viewing all managed Claude Code sessions.
 """
 
+from typing import TYPE_CHECKING
+
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
+
+if TYPE_CHECKING:
+    from ..server import AppContext
 
 from ..registry import SessionStatus
 from ..utils import error_response

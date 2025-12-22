@@ -7,9 +7,13 @@ Provides list_worktrees for managing claude-team created git worktrees.
 import logging
 import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
+
+if TYPE_CHECKING:
+    from ..server import AppContext
 
 from ..worktree import (
     get_repo_hash,

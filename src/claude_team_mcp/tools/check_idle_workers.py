@@ -4,8 +4,13 @@ Check idle workers tool.
 Provides check_idle_workers for quick non-blocking idle status checks.
 """
 
+from typing import TYPE_CHECKING
+
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
+
+if TYPE_CHECKING:
+    from ..server import AppContext
 
 from ..registry import SessionStatus
 from ..utils import error_response, HINTS
@@ -69,7 +74,9 @@ def register_tools(mcp: FastMCP) -> None:
 
         for session_id in session_ids:
             session = registry.resolve(session_id)
-            # Already validated above, but get reference again
+            # Already validated above, so session should never be None
+            if session is None:
+                continue  # Should never happen, but satisfies type checker
             idle = session.is_idle()
             idle_results[session_id] = idle
 

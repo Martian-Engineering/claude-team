@@ -7,8 +7,15 @@ from the original primitives.py for use in the MCP server.
 
 import logging
 import re
-from typing import Optional, Callable
-from pathlib import Path
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from iterm2.app import App as ItermApp
+    from iterm2.connection import Connection as ItermConnection
+    from iterm2.profile import LocalWriteOnlyProfile as ItermLocalWriteOnlyProfile
+    from iterm2.session import Session as ItermSession
+    from iterm2.tab import Tab as ItermTab
+    from iterm2.window import Window as ItermWindow
 
 from .subprocess_cache import cached_system_profiler
 
@@ -47,7 +54,7 @@ KEYS = {
 # Terminal Control
 # =============================================================================
 
-async def send_text(session: "iterm2.Session", text: str) -> None:
+async def send_text(session: "ItermSession", text: str) -> None:
     """
     Send raw text to an iTerm2 session.
 
@@ -56,7 +63,7 @@ async def send_text(session: "iterm2.Session", text: str) -> None:
     await session.async_send_text(text)
 
 
-async def send_key(session: "iterm2.Session", key: str) -> None:
+async def send_key(session: "ItermSession", key: str) -> None:
     """
     Send a special key to an iTerm2 session.
 
@@ -74,7 +81,7 @@ async def send_key(session: "iterm2.Session", key: str) -> None:
     await session.async_send_text(key_code)
 
 
-async def send_prompt(session: "iterm2.Session", text: str, submit: bool = True) -> None:
+async def send_prompt(session: "ItermSession", text: str, submit: bool = True) -> None:
     """
     Send a prompt to an iTerm2 session, optionally submitting it.
 
@@ -118,7 +125,7 @@ async def send_prompt(session: "iterm2.Session", text: str, submit: bool = True)
         await session.async_send_text(KEYS["enter"])
 
 
-async def read_screen(session: "iterm2.Session") -> list[str]:
+async def read_screen(session: "ItermSession") -> list[str]:
     """
     Read all lines from an iTerm2 session's screen.
 
@@ -132,7 +139,7 @@ async def read_screen(session: "iterm2.Session") -> list[str]:
     return [screen.line(i).string for i in range(screen.number_of_lines)]
 
 
-async def read_screen_text(session: "iterm2.Session") -> str:
+async def read_screen_text(session: "ItermSession") -> str:
     """
     Read screen content as a single string.
 
@@ -200,10 +207,10 @@ def _calculate_screen_frame() -> tuple[float, float, float, float]:
 
 
 async def create_window(
-    connection: "iterm2.Connection",
+    connection: "ItermConnection",
     profile: Optional[str] = None,
-    profile_customizations: Optional["iterm2.LocalWriteOnlyProfile"] = None,
-) -> "iterm2.Window":
+    profile_customizations: Optional["ItermLocalWriteOnlyProfile"] = None,
+) -> "ItermWindow":
     """
     Create a new iTerm2 window with screen-filling dimensions.
 
@@ -220,14 +227,26 @@ async def create_window(
     Returns:
         New window object
     """
-    import iterm2
+    from iterm2.util import Frame, Point, Size
+    from iterm2.window import Window
 
     # Create the window
-    window = await iterm2.Window.async_create(
-        connection,
-        profile=profile,
-        profile_customizations=profile_customizations,
-    )
+    # Note: We conditionally pass profile_customizations only when not None
+    # due to iterm2 library's type stubs not marking it as Optional
+    if profile_customizations is not None:
+        window = await Window.async_create(
+            connection,
+            profile=profile if profile is not None else "",
+            profile_customizations=profile_customizations,
+        )
+    else:
+        window = await Window.async_create(
+            connection,
+            profile=profile if profile is not None else "",
+        )
+
+    if window is None:
+        raise RuntimeError("Failed to create iTerm2 window")
 
     # Exit fullscreen mode if the window opened in fullscreen
     # (can happen if user's default profile or iTerm2 settings use fullscreen)
@@ -241,9 +260,9 @@ async def create_window(
 
     # Set window frame to fill screen without triggering fullscreen mode
     x, y, width, height = _calculate_screen_frame()
-    frame = iterm2.Frame(
-        origin=iterm2.Point(x, y),
-        size=iterm2.Size(width, height),
+    frame = Frame(
+        origin=Point(int(x), int(y)),
+        size=Size(int(width), int(height)),
     )
     await window.async_set_frame(frame)
 
@@ -254,12 +273,12 @@ async def create_window(
 
 
 async def split_pane(
-    session: "iterm2.Session",
+    session: "ItermSession",
     vertical: bool = True,
     before: bool = False,
     profile: Optional[str] = None,
-    profile_customizations: Optional["iterm2.LocalWriteOnlyProfile"] = None,
-) -> "iterm2.Session":
+    profile_customizations: Optional["ItermLocalWriteOnlyProfile"] = None,
+) -> "ItermSession":
     """
     Split an iTerm2 session into two panes.
 
@@ -282,7 +301,7 @@ async def split_pane(
     )
 
 
-async def close_pane(session: "iterm2.Session", force: bool = False) -> bool:
+async def close_pane(session: "ItermSession", force: bool = False) -> bool:
     """
     Close an iTerm2 session/pane.
 
@@ -309,7 +328,7 @@ SHELL_READY_MARKER = "CLAUDE_TEAM_READY_7f3a9c"
 
 
 async def wait_for_shell_ready(
-    session: "iterm2.Session",
+    session: "ItermSession",
     timeout_seconds: float = 10.0,
     poll_interval: float = 0.1,
 ) -> bool:
@@ -362,7 +381,7 @@ CLAUDE_READY_PATTERNS = [
 
 
 async def wait_for_claude_ready(
-    session: "iterm2.Session",
+    session: "ItermSession",
     timeout_seconds: float = 15.0,
     poll_interval: float = 0.2,
     stable_count: int = 2,
@@ -460,7 +479,7 @@ def build_stop_hook_settings(marker_id: str) -> str:
 
 
 async def start_claude_in_session(
-    session: "iterm2.Session",
+    session: "ItermSession",
     project_path: str,
     dangerously_skip_permissions: bool = False,
     env: Optional[dict[str, str]] = None,
@@ -539,11 +558,11 @@ LAYOUT_PANE_NAMES = {
 
 
 async def create_multi_pane_layout(
-    connection: "iterm2.Connection",
+    connection: "ItermConnection",
     layout: str,
     profile: Optional[str] = None,
-    profile_customizations: Optional[dict[str, "iterm2.LocalWriteOnlyProfile"]] = None,
-) -> dict[str, "iterm2.Session"]:
+    profile_customizations: Optional[dict[str, "ItermLocalWriteOnlyProfile"]] = None,
+) -> dict[str, "ItermSession"]:
     """
     Create a new iTerm2 window with a multi-pane layout.
 
@@ -588,9 +607,14 @@ async def create_multi_pane_layout(
         profile=profile,
         profile_customizations=get_customization(first_pane),
     )
-    initial_session = window.current_tab.current_session
+    current_tab = window.current_tab
+    if current_tab is None:
+        raise RuntimeError("Failed to get current tab from new window")
+    initial_session = current_tab.current_session
+    if initial_session is None:
+        raise RuntimeError("Failed to get initial session from new window")
 
-    panes: dict[str, "iterm2.Session"] = {}
+    panes: dict[str, "ItermSession"] = {}
 
     if layout == "single":
         # Single pane - no splitting needed, just use initial session
@@ -670,15 +694,15 @@ async def create_multi_pane_layout(
 
 
 async def create_multi_claude_layout(
-    connection: "iterm2.Connection",
+    connection: "ItermConnection",
     projects: dict[str, str],
     layout: str,
     skip_permissions: bool = False,
     project_envs: Optional[dict[str, dict[str, str]]] = None,
     profile: Optional[str] = None,
-    profile_customizations: Optional[dict[str, "iterm2.LocalWriteOnlyProfile"]] = None,
+    profile_customizations: Optional[dict[str, "ItermLocalWriteOnlyProfile"]] = None,
     pane_marker_ids: Optional[dict[str, str]] = None,
-) -> dict[str, "iterm2.Session"]:
+) -> dict[str, "ItermSession"]:
     """
     Create a multi-pane window and start Claude Code in each pane.
 
@@ -760,7 +784,7 @@ async def create_multi_claude_layout(
 MAX_PANES_PER_TAB = 4  # Maximum panes before considering tab "full"
 
 
-def count_panes_in_tab(tab: "iterm2.Tab") -> int:
+def count_panes_in_tab(tab: "ItermTab") -> int:
     """
     Count the number of panes (sessions) in a tab.
 
@@ -773,7 +797,7 @@ def count_panes_in_tab(tab: "iterm2.Tab") -> int:
     return len(tab.sessions)
 
 
-def count_panes_in_window(window: "iterm2.Window") -> int:
+def count_panes_in_window(window: "ItermWindow") -> int:
     """
     Count total panes across all tabs in a window.
 
@@ -793,10 +817,10 @@ def count_panes_in_window(window: "iterm2.Window") -> int:
 
 
 async def find_available_window(
-    app: "iterm2.App",
+    app: "ItermApp",
     max_panes: int = MAX_PANES_PER_TAB,
     managed_session_ids: Optional[set[str]] = None,
-) -> Optional[tuple["iterm2.Window", "iterm2.Tab", "iterm2.Session"]]:
+) -> Optional[tuple["ItermWindow", "ItermTab", "ItermSession"]]:
     """
     Find a window with an available tab that has room for more panes.
 
@@ -841,9 +865,9 @@ async def find_available_window(
 
 
 async def get_window_for_session(
-    app: "iterm2.App",
-    session: "iterm2.Session",
-) -> Optional["iterm2.Window"]:
+    app: "ItermApp",
+    session: "ItermSession",
+) -> Optional["ItermWindow"]:
     """
     Find the window containing a given session.
 

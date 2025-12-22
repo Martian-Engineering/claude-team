@@ -4,8 +4,13 @@ Wait idle workers tool.
 Provides wait_idle_workers for blocking until workers become idle.
 """
 
+from typing import TYPE_CHECKING
+
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
+
+if TYPE_CHECKING:
+    from ..server import AppContext
 
 from ..idle_detection import (
     wait_for_all_idle as wait_for_all_idle_impl,

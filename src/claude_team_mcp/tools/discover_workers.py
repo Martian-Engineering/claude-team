@@ -5,18 +5,18 @@ Provides discover_workers for finding existing Claude Code sessions in iTerm2.
 """
 
 import logging
+from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
-from ..iterm_utils import read_screen_text
+if TYPE_CHECKING:
+    from ..server import AppContext
+
 from ..session_state import (
-    CLAUDE_PROJECTS_DIR,
-    find_active_session,
     find_jsonl_by_iterm_id,
     get_project_dir,
     parse_session,
-    unslugify_path,
 )
 
 logger = logging.getLogger("claude-team-mcp")
@@ -33,24 +33,30 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
         """
         Discover existing Claude Code sessions running in iTerm2.
 
-        Scans all iTerm2 windows, tabs, and panes to find sessions that appear
-        to be running Claude Code. Attempts to match each session to its JSONL
-        file in ~/.claude/projects/ based on the project path visible on screen.
+        For each iTerm2 pane, searches JSONL files in ~/.claude/projects/ for a
+        matching iTerm session ID marker. Sessions spawned by claude-team write
+        their iTerm session ID into the JSONL (e.g., <!claude-team-iterm:UUID!>),
+        enabling reliable detection and recovery after MCP server restarts.
+
+        Only JSONL files modified within max_age seconds are checked. If a session
+        was started more than max_age seconds ago and hasn't had recent activity,
+        it won't be discovered. Increase max_age to find older sessions.
 
         Args:
-            max_age: Only check JSONL files modified within this many seconds (default 3600)
+            max_age: Only check JSONL files modified within this many seconds.
+                Default 3600 (1 hour). Use 86400 (24 hours) for older sessions.
 
         Returns:
             Dict with:
                 - sessions: List of discovered sessions, each containing:
                     - iterm_session_id: iTerm2's internal session ID
-                    - project_path: Detected project path (if found)
-                    - claude_session_id: Matched JSONL session ID (if found)
-                    - model: Detected model (Opus/Sonnet/Haiku if visible)
-                    - last_assistant_preview: Preview of last assistant message (if JSONL found)
-                    - already_managed: True if this session is already in our registry
+                    - project_path: Detected project path
+                    - claude_session_id: The JSONL session UUID
+                    - internal_session_id: Our short session ID (e.g., "b48e2d5b")
+                    - last_assistant_preview: Preview of last assistant message
+                    - already_managed: True if already in our registry
                 - count: Total number of Claude sessions found
-                - unmanaged_count: Number not yet imported into registry
+                - unmanaged_count: Number not yet in registry (available to adopt)
         """
         app_ctx = ctx.request_context.lifespan_context
         registry = app_ctx.registry
@@ -65,104 +71,47 @@ def register_tools(mcp: FastMCP, ensure_connection) -> None:
             s.iterm_session.session_id for s in registry.list_all()
         }
 
-        # Scan all iTerm2 sessions
+        # Scan all iTerm2 panes and check if their session ID appears in any JSONL
         for window in app.terminal_windows:
             for tab in window.tabs:
                 for iterm_session in tab.sessions:
                     try:
-                        screen_text = await read_screen_text(iterm_session)
+                        # Look for this iTerm session ID in recent JSONL files
+                        # Claude-team spawned sessions write their iTerm ID as a marker
+                        match = find_jsonl_by_iterm_id(
+                            iterm_session.session_id,
+                            max_age_seconds=max_age
+                        )
 
-                        # Detect if this is a Claude Code session by looking for indicators:
-                        # - Model name (Opus, Sonnet, Haiku)
-                        # - Prompt character (>)
-                        # - Common Claude Code UI elements
-                        is_claude = False
-                        detected_model = None
-
-                        for model in ["Opus", "Sonnet", "Haiku"]:
-                            if model in screen_text:
-                                is_claude = True
-                                detected_model = model
-                                break
-
-                        # Also check for Claude-specific patterns
-                        if not is_claude:
-                            # Look for status line patterns: "ctx:", "tokens", "api:✓"
-                            if "ctx:" in screen_text or "tokens" in screen_text:
-                                is_claude = True
-
-                        if not is_claude:
+                        if not match:
+                            # Not a Claude session we know about
                             continue
 
-                        # Try to extract project path from screen
-                        # Look for "git:(" pattern which shows git branch, indicating project dir
-                        # Or extract from visible path patterns
-                        project_path = None
-                        claude_session_id = None
+                        project_path = match.project_path
+                        claude_session_id = match.jsonl_path.stem
+                        internal_session_id = match.internal_session_id
 
-                        # Parse screen lines for project info
-                        lines = [l.strip() for l in screen_text.split("\n") if l.strip()]
-
-                        # Look for git branch indicator which often shows project name
-                        for line in lines:
-                            # Pattern: "project-name git:(branch)" in status line
-                            if "git:(" in line:
-                                # Extract the part before "git:("
-                                parts = line.split("git:(")[0].strip().split()
-                                if parts:
-                                    project_name = parts[-1]
-                                    # Try to find this project in Claude's projects dir
-                                    for proj_dir in CLAUDE_PROJECTS_DIR.iterdir():
-                                        if proj_dir.is_dir() and project_name in proj_dir.name:
-                                            # Use unslugify_path to handle hyphens in names
-                                            # correctly (e.g., claude-iterm-controller)
-                                            reconstructed = unslugify_path(proj_dir.name)
-                                            if reconstructed:
-                                                project_path = reconstructed
-                                                break
-                                break
-
-                        # If we found a project path, try to find the active JSONL session
-                        if project_path:
-                            # Find most recently active session for this project
-                            claude_session_id = find_active_session(
-                                project_path, max_age_seconds=3600  # Within last hour
-                            )
-
-                        # Fallback: try to find JSONL by iTerm marker
-                        # This works for sessions spawned by claude-team that have
-                        # the iTerm-specific marker in their JSONL
-                        internal_session_id = None
-                        if not project_path:
-                            match = find_jsonl_by_iterm_id(iterm_session.session_id, max_age_seconds=max_age)
-                            if match:
-                                project_path = match.project_path
-                                claude_session_id = match.jsonl_path.stem
-                                internal_session_id = match.internal_session_id
-
-                        # Get last assistant message preview from JSONL if available
+                        # Get last assistant message preview from JSONL
                         last_assistant_preview = None
-                        if project_path and claude_session_id:
-                            try:
-                                jsonl_path = get_project_dir(project_path) / f"{claude_session_id}.jsonl"
-                                if jsonl_path.exists():
-                                    state = parse_session(jsonl_path)
-                                    if state.last_assistant_message:
-                                        content = state.last_assistant_message.content
-                                        last_assistant_preview = (
-                                            content[:200] + "..."
-                                            if len(content) > 200
-                                            else content
-                                        )
-                            except Exception as e:
-                                logger.debug(f"Could not get conversation preview: {e}")
+                        try:
+                            jsonl_path = get_project_dir(project_path) / f"{claude_session_id}.jsonl"
+                            if jsonl_path.exists():
+                                state = parse_session(jsonl_path)
+                                if state.last_assistant_message:
+                                    content = state.last_assistant_message.content
+                                    last_assistant_preview = (
+                                        content[:200] + "..."
+                                        if len(content) > 200
+                                        else content
+                                    )
+                        except Exception as e:
+                            logger.debug(f"Could not get conversation preview: {e}")
 
                         discovered.append({
                             "iterm_session_id": iterm_session.session_id,
                             "project_path": project_path,
                             "claude_session_id": claude_session_id,
-                            "internal_session_id": internal_session_id,  # Our session ID if recovered via marker
-                            "model": detected_model,
+                            "internal_session_id": internal_session_id,
                             "last_assistant_preview": last_assistant_preview,
                             "already_managed": iterm_session.session_id in managed_iterm_ids,
                         })
