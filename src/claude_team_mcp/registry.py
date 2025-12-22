@@ -306,9 +306,9 @@ class SessionRegistry:
         if identifier in self._sessions:
             return self._sessions[identifier]
 
-        # 2. Try terminal native ID (iterate once)
+        # 2. Try terminal ID (e.g., "iterm:UUID")
         for session in self._sessions.values():
-            if session.terminal_id and session.terminal_id.native_id == identifier:
+            if session.terminal_id and str(session.terminal_id) == identifier:
                 return session
 
         # 3. Try name (last resort)
