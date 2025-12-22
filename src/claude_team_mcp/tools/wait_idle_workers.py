@@ -35,7 +35,8 @@ def register_tools(mcp: FastMCP) -> None:
         - "any": Return as soon as ANY worker becomes idle (for pipelines)
 
         Args:
-            session_ids: List of session IDs to wait on (accepts 1 or more)
+            session_ids: List of session IDs to wait on (accepts 1 or more).
+                Accepts internal IDs, terminal IDs, or worker names.
             mode: "all" or "any" - default "all"
             timeout: Maximum seconds to wait (default 10 minutes)
             poll_interval: Seconds between checks (default 2)
@@ -85,7 +86,7 @@ def register_tools(mcp: FastMCP) -> None:
 
             session_infos.append(SessionInfo(
                 jsonl_path=jsonl_path,
-                session_id=session_id,
+                session_id=session.session_id,  # Must use internal ID to match stop hook marker
             ))
 
         # Report any missing sessions/files

@@ -26,7 +26,8 @@ def register_tools(mcp: FastMCP) -> None:
         to see what the worker last said.
 
         Args:
-            session_id: ID of the target session
+            session_id: ID of the target session.
+                Accepts internal IDs, terminal IDs, or worker names.
 
         Returns:
             Dict with detailed session status

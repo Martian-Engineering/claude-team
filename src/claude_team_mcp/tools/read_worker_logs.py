@@ -35,7 +35,8 @@ def register_tools(mcp: FastMCP) -> None:
         Page size is 5 messages (each user or assistant message counts as 1).
 
         Args:
-            session_id: ID of the target session
+            session_id: ID of the target session.
+                Accepts internal IDs, terminal IDs, or worker names.
             pages: Number of pages to return (default 1)
             offset: Number of pages to skip from the end (default 0 = most recent)
 

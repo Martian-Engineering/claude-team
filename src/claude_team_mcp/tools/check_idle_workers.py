@@ -31,7 +31,8 @@ def register_tools(mcp: FastMCP) -> None:
         current state, while wait_idle_workers blocks until sessions become idle.
 
         Args:
-            session_ids: List of session IDs to check (required, accepts 1 or more)
+            session_ids: List of session IDs to check (required, accepts 1 or more).
+                Accepts internal IDs, terminal IDs, or worker names.
 
         Returns:
             Dict with:

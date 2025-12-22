@@ -340,25 +340,30 @@ class SessionRegistry:
         Remove a session from the registry.
 
         Args:
-            session_id: ID of session to remove
+            session_id: ID of session to remove.
+                Accepts internal IDs, terminal IDs, or worker names.
 
         Returns:
             The removed session, or None if not found
         """
-        return self._sessions.pop(session_id, None)
+        session = self.resolve(session_id)
+        if session:
+            return self._sessions.pop(session.session_id, None)
+        return None
 
     def update_status(self, session_id: str, status: SessionStatus) -> bool:
         """
         Update a session's status.
 
         Args:
-            session_id: ID of session to update
+            session_id: ID of session to update.
+                Accepts internal IDs, terminal IDs, or worker names.
             status: New status
 
         Returns:
             True if session was found and updated
         """
-        session = self._sessions.get(session_id)
+        session = self.resolve(session_id)
         if session:
             session.status = status
             session.update_activity()

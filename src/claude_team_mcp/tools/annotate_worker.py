@@ -26,7 +26,8 @@ def register_tools(mcp: FastMCP) -> None:
         These annotations appear in list_workers output.
 
         Args:
-            session_id: The session to annotate
+            session_id: The session to annotate.
+                Accepts internal IDs, terminal IDs, or worker names.
             annotation: Note about what this worker is working on
 
         Returns:

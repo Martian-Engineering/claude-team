@@ -110,7 +110,8 @@ def register_tools(mcp: FastMCP) -> None:
         their iTerm2 panes. All session_ids must exist in the registry.
 
         Args:
-            session_ids: List of session IDs to close (1 or more required)
+            session_ids: List of session IDs to close (1 or more required).
+                Accepts internal IDs, terminal IDs, or worker names.
             force: If True, force close even if sessions are busy
 
         Returns:
