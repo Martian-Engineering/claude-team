@@ -25,7 +25,7 @@ SOLOS: dict[str, list[str]] = {
     "plato": ["Plato"],
     "socrates": ["Socrates"],
     "rembrandt": ["Rembrandt"],
-    "michelangelo_solo": ["Michelangelo"],
+    "michelangelo": ["Michelangelo"],
     "napoleon": ["Napoleon"],
     "cleopatra": ["Cleopatra"],
     "gandhi": ["Gandhi"],
@@ -50,6 +50,12 @@ SOLOS: dict[str, list[str]] = {
     "oprah": ["Oprah"],
     "basquiat": ["Basquiat"],
     "hokusai": ["Hokusai"],
+    # Fiction
+    "hiro": ["Hiro Protagonist"],
+    "wishbone": ["Wishbone"],
+    # Philosophy
+    "sartre": ["Sartre"],
+    "negarestani": ["Negarestani"],
 }
 
 # Dynamic duos - iconic pairs
@@ -79,7 +85,7 @@ DUOS: dict[str, list[str]] = {
     "sherlock_watson": ["Sherlock", "Watson"],
     "frodo_sam": ["Frodo", "Sam"],
     "han_chewie": ["Han", "Chewie"],
-    "r2_3po": ["R2", "3PO"],
+    "r2_3po": ["R2D2", "C-3PO"],
     "bill_ted": ["Bill", "Ted"],
     "wayne_garth": ["Wayne", "Garth"],
     "blues_brothers": ["Jake", "Elwood"],
@@ -89,7 +95,6 @@ DUOS: dict[str, list[str]] = {
     "daft_punk": ["Thomas", "Guy-Man"],
     "flight_concords": ["Bret", "Jemaine"],
     "odd_couple": ["Oscar", "Felix"],
-    "ace_ventura": ["Ace", "Spike"],  # Just kidding, using classic duo
     "peanut_butter_jelly": ["PB", "J"],
     "salt_pepa": ["Salt", "Pepa"],
     "milli_vanilli": ["Fab", "Rob"],
@@ -106,9 +111,14 @@ DUOS: dict[str, list[str]] = {
     # Science & innovation
     "wright_bros": ["Orville", "Wilbur"],
     "jobs_woz": ["Steve", "Woz"],
+    # Philosophy
+    "phil_science": ["Peirce", "Kuhn"],
+    "pragmatists": ["James", "Rorty"],
+    "d_and_g": ["Deleuze", "Guattari"],
     # TV
     "tia_tamera": ["Tia", "Tamera"],
     "statler_waldorf": ["Statler", "Waldorf"],
+    "laverne_shirley": ["Laverne", "Shirley"],
 }
 
 # Terrific trios - famous threesomes
@@ -127,6 +137,20 @@ TRIOS: dict[str, list[str]] = {
     "supremes": ["Diana", "Mary", "Florence"],
     "charlie_angels": ["Kelly", "Jill", "Sabrina"],
     "powerpuff_girls": ["Blossom", "Bubbles", "Buttercup"],
+    "oai_research": ["Ilya", "Dario", "Sam"],
+    "southern_reach": ["Biologist", "Control", "Saul"],
+    "homeward_bound": ["Shadow", "Chance", "Sassy"],
+    "john_dies": ["David", "John", "Amy"],
+    "totoro": ["Satsuki", "Mei", "Totoro"],
+    "trio_mandili": ["Tatuli", "Tako", "Mariam"],
+    # Philosophy
+    "vienna_circle": ["Carnap", "Schlick", "Neurath"],
+    "ccru": ["Land", "Plant", "Fisher"],
+    # Film
+    "stalker": ["Stalker", "Writer", "Professor"],
+    # Horror
+    "pontypool": ["Grant", "Sydney", "Laurel-Ann"],
+    # TV/Animation
     "ed_edd_eddy": ["Ed", "Edd", "Eddy"],
     "chipettes": ["Brittany", "Jeanette", "Eleanor"],
     "chipmunks": ["Alvin", "Simon", "Theodore"],
@@ -171,7 +195,6 @@ QUARTETS: dict[str, list[str]] = {
     "horsemen": ["Conquest", "War", "Famine", "Death"],
     "golden_girls": ["Dorothy", "Rose", "Blanche", "Sophia"],
     "sex_city": ["Carrie", "Samantha", "Charlotte", "Miranda"],
-    "teenage_dirtbags": ["Artie", "Finn", "Kurt", "Puck"],  # Early Glee guys
     "queen": ["Freddie", "Brian", "Roger", "John"],
     "led_zeppelin": ["Robert", "Jimmy", "John Paul", "Bonzo"],
     "metallica": ["James", "Lars", "Kirk", "Robert"],
@@ -191,7 +214,10 @@ QUARTETS: dict[str, list[str]] = {
     "monkees": ["Davy", "Micky", "Michael", "Peter"],
     "crosby_stills": ["David", "Stephen", "Graham", "Neil"],
     "it_crowd": ["Roy", "Moss", "Jen", "Richmond"],
-    # Philosophy & mythology
+    "mst3k": ["Cambot", "Tom", "Gypsy", "Crow"],
+    # Philosophy
+    "frankfurt_school": ["Adorno", "Horkheimer", "Marcuse", "Benjamin"],
+    # Mythology
     "cardinal_virtues": ["Prudence", "Justice", "Temperance", "Fortitude"],
     "four_winds": ["Boreas", "Notus", "Eurus", "Zephyrus"],
     # Anime
@@ -220,7 +246,6 @@ QUINTETS: dict[str, list[str]] = {
     "new_edition": ["Bobby", "Ralph", "Ricky", "Michael", "Ronnie"],
     "temptations": ["Eddie", "David", "Otis", "Paul", "Melvin"],
     "aerosmith": ["Steven", "Joe", "Tom", "Joey", "Brad"],
-    "def_leppard": ["Joe", "Phil", "Rick", "Vivian", "Rick S"],
     "rolling_stones": ["Mick", "Keith", "Charlie", "Ron", "Bill"],
     "maroon_5_core": ["Adam", "Jesse", "Mickey", "James", "Matt"],
     "ac_dc": ["Angus", "Malcolm", "Brian", "Cliff", "Phil"],
@@ -230,12 +255,9 @@ QUINTETS: dict[str, list[str]] = {
     "voltron_force": ["Keith", "Lance", "Pidge", "Hunk", "Allura"],
     "planeteers": ["Kwame", "Wheeler", "Linka", "Gi", "Ma-Ti"],
     "scooby_gang": ["Fred", "Daphne", "Velma", "Shaggy", "Scooby"],
-    "friends_minus_one": ["Rachel", "Monica", "Phoebe", "Joey", "Chandler"],
     "queer_eye_og": ["Ted", "Kyan", "Thom", "Carson", "Jai"],
-    "basketball_diaries": ["Jordan", "Magic", "Bird", "Kareem", "Wilt"],
     "rat_pack": ["Frank", "Dean", "Sammy", "Peter", "Joey"],
-    "famous_five": ["Julian", "Dick", "Anne", "George", "Timmy"],
-    "hi5": ["Charli", "Kellie", "Kathleen", "Nathan", "Tim"],
+    "yamadas": ["Takashi", "Matsuko", "Shige", "Noboru", "Nonoko"],
 }
 
 # Larger ensembles for flexibility
