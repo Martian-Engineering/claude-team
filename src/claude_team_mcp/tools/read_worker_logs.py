@@ -7,10 +7,7 @@ Provides read_worker_logs for getting conversation history from a Claude Code se
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
 
-from ..utils import error_response, HINTS, get_session_or_error
-
-# Default page size for conversation history
-CONVERSATION_PAGE_SIZE = 5
+from ..utils import error_response, HINTS, get_session_or_error, CONVERSATION_PAGE_SIZE
 
 
 def register_tools(mcp: FastMCP) -> None:
