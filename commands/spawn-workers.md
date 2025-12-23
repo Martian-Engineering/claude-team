@@ -19,7 +19,7 @@ For each task that's ready to start:
 
 ### 3. Spawn Workers
 Use the claude-team MCP tools to spawn workers:
-- Use `spawn_session` or `spawn_team` depending on count
+- Use `spawn_team` to spawn workers (handles 1 to N workers)
 - Set `skip_permissions: true` for autonomous work
 - Send each worker a task prompt that includes the **full workflow**:
 
