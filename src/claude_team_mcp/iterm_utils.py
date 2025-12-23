@@ -455,21 +455,31 @@ async def wait_for_claude_ready(
 # Claude Session Control
 # =============================================================================
 
-def build_stop_hook_settings(marker_id: str) -> str:
+def build_stop_hook_settings_file(marker_id: str) -> str:
     """
-    Build the --settings JSON for Stop hook injection.
+    Build a settings file for Stop hook injection.
 
     The hook embeds a marker in the command text itself, which gets logged
     to the JSONL in the stop_hook_summary's hookInfos array. This provides
     reliable completion detection without needing stderr or exit code hacks.
 
+    We write to a file instead of passing JSON inline due to a bug in Claude Code
+    v2.0.72+ where inline JSON causes the file watcher to incorrectly watch the
+    temp directory, crashing on Unix sockets. See:
+    https://github.com/anthropics/claude-code/issues/14438
+
     Args:
         marker_id: Unique ID to embed in the marker (typically session_id)
 
     Returns:
-        JSON string suitable for --settings flag
+        Path to the settings file (suitable for --settings flag)
     """
     import json
+    from pathlib import Path
+
+    # Use a stable directory that won't have Unix sockets
+    settings_dir = Path.home() / ".claude" / "claude-team-settings"
+    settings_dir.mkdir(parents=True, exist_ok=True)
 
     settings = {
         "hooks": {
@@ -481,7 +491,12 @@ def build_stop_hook_settings(marker_id: str) -> str:
             }]
         }
     }
-    return json.dumps(settings, separators=(',', ':'))
+
+    # Use marker_id as filename for deterministic, reusable files
+    settings_file = settings_dir / f"worker-{marker_id}.json"
+    settings_file.write_text(json.dumps(settings, indent=2))
+
+    return str(settings_file)
 
 
 async def start_claude_in_session(
@@ -526,8 +541,8 @@ async def start_claude_in_session(
     if dangerously_skip_permissions:
         claude_cmd += " --dangerously-skip-permissions"
     if stop_hook_marker_id:
-        settings_json = build_stop_hook_settings(stop_hook_marker_id)
-        claude_cmd += f" --settings '{settings_json}'"
+        settings_file = build_stop_hook_settings_file(stop_hook_marker_id)
+        claude_cmd += f" --settings {settings_file}"
 
     # Prepend environment variables to claude (not cd)
     if env:
