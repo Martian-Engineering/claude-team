@@ -132,6 +132,11 @@ async def test_spawn_workers_uses_config_defaults(tmp_path, monkeypatch):
         return None
 
     monkeypatch.setattr(session_state, "await_marker_in_jsonl", fake_await_marker_in_jsonl)
+    monkeypatch.setattr(
+        session_state,
+        "await_codex_marker_in_jsonl",
+        fake_await_marker_in_jsonl,
+    )
     monkeypatch.setattr(session_state, "generate_marker_message", lambda *args, **kwargs: "MARKER")
 
     backend = FakeBackend()
@@ -157,7 +162,7 @@ async def test_spawn_workers_uses_config_defaults(tmp_path, monkeypatch):
     assert result["layout"] == "new"
     assert seen_agent_types == ["codex"]
     assert backend.started[0]["dangerously_skip_permissions"] is True
-    assert backend.started[0]["env"] == {"CI": "1"}
+    assert backend.started[0]["env"] is None
     assert result["sessions"]["Worker1"]["agent_type"] == "codex"
     assert prompt_calls == [False]
 
@@ -209,6 +214,11 @@ async def test_spawn_workers_invalid_config_falls_back(tmp_path, monkeypatch):
         return None
 
     monkeypatch.setattr(session_state, "await_marker_in_jsonl", fake_await_marker_in_jsonl)
+    monkeypatch.setattr(
+        session_state,
+        "await_codex_marker_in_jsonl",
+        fake_await_marker_in_jsonl,
+    )
     monkeypatch.setattr(session_state, "generate_marker_message", lambda *args, **kwargs: "MARKER")
 
     backend = FakeBackend()
@@ -240,8 +250,10 @@ async def test_spawn_workers_invalid_config_falls_back(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_spawn_workers_merges_codex_ci_with_worktree_tracker_env(tmp_path, monkeypatch):
-    """Codex workers should include CI=1 alongside worktree tracker env vars."""
+async def test_spawn_workers_preserves_worktree_tracker_env_for_codex(
+    tmp_path, monkeypatch
+):
+    """Codex workers should still receive worktree tracker env vars."""
     config = default_config()
     config.defaults = DefaultsConfig(
         agent_type="codex",
@@ -271,6 +283,11 @@ async def test_spawn_workers_merges_codex_ci_with_worktree_tracker_env(tmp_path,
         return None
 
     monkeypatch.setattr(session_state, "await_marker_in_jsonl", fake_await_marker_in_jsonl)
+    monkeypatch.setattr(
+        session_state,
+        "await_codex_marker_in_jsonl",
+        fake_await_marker_in_jsonl,
+    )
     monkeypatch.setattr(session_state, "generate_marker_message", lambda *args, **kwargs: "MARKER")
 
     backend = FakeBackend()
@@ -295,7 +312,6 @@ async def test_spawn_workers_merges_codex_ci_with_worktree_tracker_env(tmp_path,
 
     assert backend.started[0]["env"] == {
         "MANIPLE_WORKTREE_TRACKER_DIR": "/tmp/tracker",
-        "CI": "1",
     }
 
 

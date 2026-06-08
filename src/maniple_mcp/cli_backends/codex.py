@@ -19,6 +19,11 @@ _DEFAULT_COMMAND = "codex"
 _ENV_VAR = "MANIPLE_CODEX_COMMAND"
 _ENV_VAR_FALLBACK = "CLAUDE_TEAM_CODEX_COMMAND"
 
+# Maniple uses CodexCLI to launch unattended worker TUIs. Disable Codex's
+# documented startup update check so an update prompt cannot consume the first
+# marker or assignment prompt.
+_DISABLE_STARTUP_UPDATE_CHECK_ARGS = ["-c", "check_for_update_on_startup=false"]
+
 
 def get_codex_command() -> str:
     """
@@ -100,7 +105,7 @@ class CodexCLI(AgentCLI):
         Returns:
             List of CLI arguments for interactive mode
         """
-        args: list[str] = []
+        args: list[str] = [*_DISABLE_STARTUP_UPDATE_CHECK_ARGS]
 
         # Codex uses --dangerously-bypass-approvals-and-sandbox for autonomous operation.
         if dangerously_skip_permissions:
@@ -110,7 +115,6 @@ class CodexCLI(AgentCLI):
         # Idle detection uses session file polling instead
 
         return args
-
 
     def ready_patterns(self) -> list[str]:
         """
@@ -126,11 +130,7 @@ class CodexCLI(AgentCLI):
             "What can I help you with?",  # Legacy prompt (older versions)
             "codex>",  # Alternative prompt pattern
             "»",  # Codex uses this prompt symbol
-            "›",  # Codex v0.124+ prompt symbol
-            ">_ OpenAI Codex",  # Codex v0.124+ startup banner
-            "OpenAI Codex (v",  # Codex v0.124+ boxed banner
-            "model:",  # Codex v0.124+ ready screen metadata
-            "permissions:",  # Codex v0.124+ ready screen metadata
+            "OpenAI Codex (v",  # Codex v0.124+ boxed ready banner
             "Waiting for messages",  # Happy codex wrapper
             "Codex Agent Running",  # Happy codex status bar
         ]
@@ -152,7 +152,6 @@ class CodexCLI(AgentCLI):
         Alternative completion detection methods will be needed.
         """
         return False
-
 
 
 # Singleton instance for convenience
