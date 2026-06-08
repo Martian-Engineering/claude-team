@@ -241,10 +241,10 @@ class TestCodexCLI:
             assert cli.command() == "from-env"
 
     def test_build_args_empty_default(self):
-        """Default args should be empty list."""
+        """Default args should disable interactive startup update checks."""
         cli = CodexCLI()
         args = cli.build_args()
-        assert args == []
+        assert args == ["-c", "check_for_update_on_startup=false"]
 
     def test_build_args_skip_permissions_maps_to_bypass_approvals(self):
         """skip_permissions should map to --dangerously-bypass-approvals-and-sandbox for Codex."""
@@ -266,12 +266,35 @@ class TestCodexCLI:
         assert len(patterns) > 0
 
     def test_ready_patterns_include_codex_0124_tui(self):
-        """Ready detection should recognize Codex v0.124's boxed TUI."""
+        """Ready detection should recognize Codex v0.124's ready screen."""
         cli = CodexCLI()
         patterns = cli.ready_patterns()
-        assert "›" in patterns
-        assert ">_ OpenAI Codex" in patterns
         assert "OpenAI Codex (v" in patterns
+        assert "% left" in patterns
+        assert "for shortcuts" in patterns
+
+    def test_ready_patterns_do_not_include_prompt_or_metadata_only_markers(self):
+        """Startup and modal text can appear before the composer is ready."""
+        cli = CodexCLI()
+        patterns = cli.ready_patterns()
+        assert ">_ OpenAI Codex" not in patterns
+        assert "model:" not in patterns
+        assert "permissions:" not in patterns
+        assert "›" not in patterns
+
+    def test_ready_patterns_do_not_match_codex_update_prompt(self):
+        """The update prompt uses the same selection cursor as the composer."""
+        cli = CodexCLI()
+        patterns = cli.ready_patterns()
+        update_prompt = "\n".join([
+            "Update available! 0.135.0 -> 0.137.0",
+            "Release notes: https://github.com/openai/codex/releases/latest",
+            "› 1. Update now (runs `npm install -g @openai/codex@latest`)",
+            "  2. Skip",
+            "  3. Skip until next version",
+            "Press enter to continue",
+        ])
+        assert not any(pattern in update_prompt for pattern in patterns)
 
     def test_idle_detection_method(self):
         """Idle detection should use JSONL streaming (captures output via tee)."""
@@ -284,13 +307,13 @@ class TestCodexCLI:
         assert cli.supports_settings_file() is False
 
     def test_build_full_command_simple(self):
-        """build_full_command should return just 'codex' for defaults."""
+        """build_full_command should include the update-check override."""
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("MANIPLE_CODEX_COMMAND", None)
             os.environ.pop("CLAUDE_TEAM_CODEX_COMMAND", None)
             cli = CodexCLI()
             cmd = cli.build_full_command()
-            assert cmd == "codex"
+            assert cmd == "codex -c check_for_update_on_startup=false"
 
     def test_build_full_command_with_bypass_approvals(self):
         """build_full_command should add --dangerously-bypass-approvals-and-sandbox."""
@@ -299,14 +322,22 @@ class TestCodexCLI:
             os.environ.pop("CLAUDE_TEAM_CODEX_COMMAND", None)
             cli = CodexCLI()
             cmd = cli.build_full_command(dangerously_skip_permissions=True)
-            assert cmd == "codex --dangerously-bypass-approvals-and-sandbox"
+            assert (
+                cmd
+                == "codex -c check_for_update_on_startup=false "
+                "--dangerously-bypass-approvals-and-sandbox"
+            )
 
     def test_build_full_command_with_env_var(self):
         """build_full_command should use MANIPLE_CODEX_COMMAND."""
         with patch.dict(os.environ, {"MANIPLE_CODEX_COMMAND": "happy codex"}):
             cli = CodexCLI()
             cmd = cli.build_full_command(dangerously_skip_permissions=True)
-            assert cmd == "happy codex --dangerously-bypass-approvals-and-sandbox"
+            assert (
+                cmd
+                == "happy codex -c check_for_update_on_startup=false "
+                "--dangerously-bypass-approvals-and-sandbox"
+            )
 
 
 class TestGetCliBackend:
